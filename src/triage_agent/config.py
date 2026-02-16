@@ -15,8 +15,8 @@ class TriageAgentConfig(BaseSettings):
     memgraph_port: int = 7687
 
     # MCP Server URLs
-    prometheus_url: str = "http://prometheus:9090"
-    loki_url: str = "http://loki:3100"
+    prometheus_url: str = "http://kube-prom-kube-prometheus-prometheus.monitoring:9090"
+    loki_url: str = "http://loki.monitoring:3100"
     mcp_timeout: float = 3.0
 
     # LLM Configuration

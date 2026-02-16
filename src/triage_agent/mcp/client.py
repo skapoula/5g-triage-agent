@@ -52,7 +52,7 @@ class MCPClient:
     ) -> dict[str, Any]:
         """Execute instant PromQL query."""
         client = await self._get_client()
-        params: dict[str, Any] = {"query": query}
+        params: dict[str, str | int] = {"query": query}
         if time:
             params["time"] = time
 
@@ -68,7 +68,8 @@ class MCPClient:
                 data = response.json()
                 if data.get("status") != "success":
                     raise MCPQueryError(f"Prometheus error: {data.get('error')}")
-                return data.get("data", {})
+                result: dict[str, Any] = data.get("data", {})
+                return result
             except httpx.TimeoutException as e:
                 raise MCPTimeoutError(f"Prometheus query timed out: {query}") from e
             except httpx.HTTPStatusError as e:
@@ -91,7 +92,7 @@ class MCPClient:
     ) -> dict[str, Any]:
         """Execute range PromQL query."""
         client = await self._get_client()
-        params = {
+        params: dict[str, str | int] = {
             "query": query,
             "start": start,
             "end": end,
@@ -108,7 +109,8 @@ class MCPClient:
             data = response.json()
             if data.get("status") != "success":
                 raise MCPQueryError(f"Prometheus error: {data.get('error')}")
-            return data.get("data", {})
+            result: dict[str, Any] = data.get("data", {})
+            return result
         except httpx.TimeoutException as e:
             raise MCPTimeoutError("Prometheus range query timed out") from e
         except httpx.HTTPStatusError as e:
@@ -123,7 +125,7 @@ class MCPClient:
     ) -> list[dict[str, Any]]:
         """Execute LogQL query."""
         client = await self._get_client()
-        params = {
+        params: dict[str, str | int] = {
             "query": logql,
             "start": start * 1_000_000_000,  # Convert to nanoseconds
             "end": end * 1_000_000_000,
