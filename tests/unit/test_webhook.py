@@ -1,6 +1,7 @@
 """Tests for FastAPI webhook endpoint."""
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +29,83 @@ def alertmanager_payload(sample_alert: dict[str, Any]) -> dict[str, Any]:
         "version": "4",
         "groupKey": "test-group",
     }
+
+
+class TestHealthEndpoint:
+    """Tests for GET /health endpoint."""
+
+    def test_health_returns_status_healthy(self, client: TestClient) -> None:
+        """Health check should return healthy when all services are up."""
+        mock_memgraph = MagicMock()
+        mock_memgraph.health_check.return_value = True
+
+        mock_mcp = AsyncMock()
+        mock_mcp.health_check_prometheus.return_value = True
+        mock_mcp.health_check_loki.return_value = True
+        mock_mcp.__aenter__ = AsyncMock(return_value=mock_mcp)
+        mock_mcp.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("triage_agent.memgraph.connection.get_memgraph", return_value=mock_memgraph),
+            patch("triage_agent.mcp.client.MCPClient", return_value=mock_mcp),
+        ):
+            response = client.get("/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["memgraph"] is True
+        assert data["prometheus"] is True
+        assert data["loki"] is True
+        assert "timestamp" in data
+
+    def test_health_returns_degraded_when_memgraph_down(
+        self, client: TestClient
+    ) -> None:
+        """Health check should return degraded when Memgraph is unavailable."""
+        mock_memgraph = MagicMock()
+        mock_memgraph.health_check.return_value = False
+
+        mock_mcp = AsyncMock()
+        mock_mcp.health_check_prometheus.return_value = True
+        mock_mcp.health_check_loki.return_value = True
+        mock_mcp.__aenter__ = AsyncMock(return_value=mock_mcp)
+        mock_mcp.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("triage_agent.memgraph.connection.get_memgraph", return_value=mock_memgraph),
+            patch("triage_agent.mcp.client.MCPClient", return_value=mock_mcp),
+        ):
+            response = client.get("/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["memgraph"] is False
+
+    def test_health_returns_degraded_when_prometheus_down(
+        self, client: TestClient
+    ) -> None:
+        """Health check should return degraded when Prometheus is unavailable."""
+        mock_memgraph = MagicMock()
+        mock_memgraph.health_check.return_value = True
+
+        mock_mcp = AsyncMock()
+        mock_mcp.health_check_prometheus.return_value = False
+        mock_mcp.health_check_loki.return_value = True
+        mock_mcp.__aenter__ = AsyncMock(return_value=mock_mcp)
+        mock_mcp.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("triage_agent.memgraph.connection.get_memgraph", return_value=mock_memgraph),
+            patch("triage_agent.mcp.client.MCPClient", return_value=mock_mcp),
+        ):
+            response = client.get("/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["prometheus"] is False
 
 
 class TestRootEndpoint:

@@ -1,8 +1,9 @@
 """FastAPI webhook endpoint for Alertmanager."""
+# ruff: noqa: N815 — camelCase field names match Alertmanager webhook JSON schema
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -110,7 +111,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status=overall_status,
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         memgraph=memgraph_ok,
         prometheus=prometheus_ok,
         loki=loki_ok,
