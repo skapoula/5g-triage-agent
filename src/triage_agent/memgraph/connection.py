@@ -128,8 +128,8 @@ class MemgraphConnection:
         MATCH (ref:ReferenceTrace {name: $dag_name})-[:STEP]->(refStep:RefEvent)
         MATCH (trace:CapturedTrace {incident_id: $incident_id, imsi: $imsi})-[:EVENT]->(event:TraceEvent)
         WHERE refStep.order = event.order AND NOT event.action CONTAINS refStep.action
-        RETURN refStep.order AS deviation_point, 
-               refStep.action AS expected, 
+        RETURN refStep.order AS deviation_point,
+               refStep.action AS expected,
                event.action AS actual,
                refStep.nf AS expected_nf,
                event.nf AS actual_nf
@@ -161,7 +161,7 @@ class MemgraphConnection:
     def __enter__(self) -> "MemgraphConnection":
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args: object) -> None:
         self.close()
 
 

@@ -58,8 +58,56 @@ INFRA_PROMETHEUS_QUERIES = [
 
 def compute_infrastructure_score(metrics: dict) -> float:
     """Compute weighted infra score from pod metrics. Returns 0.0-1.0."""
-    # TODO: implement scoring logic per weight table above
-    raise NotImplementedError
+    score = 0.0
+
+    # Factor 1: Pod Restarts (weight 0.35)
+    restarts = metrics.get("pod_restarts", [])
+    max_restarts = max(
+        (entry.get("value", 0) for entry in restarts), default=0
+    )
+    if max_restarts > 5:
+        restart_factor = 1.0
+    elif max_restarts >= 3:
+        restart_factor = 0.7
+    elif max_restarts >= 1:
+        restart_factor = 0.4
+    else:
+        restart_factor = 0.0
+    score += 0.35 * restart_factor
+
+    # Factor 2: OOM kills (weight 0.25)
+    oom_kills = metrics.get("oom_kills", [])
+    score += 0.25 * (1.0 if oom_kills else 0.0)
+
+    # Factor 3: Pod Status (weight 0.20)
+    pod_status = metrics.get("pod_status", [])
+    status_factor = 0.0
+    for entry in pod_status:
+        phase = entry.get("phase", "Running")
+        if phase in ("Failed", "Unknown"):
+            status_factor = max(status_factor, 1.0)
+        elif phase == "Pending":
+            status_factor = max(status_factor, 0.6)
+    score += 0.20 * status_factor
+
+    # Factor 4: Resource Saturation (weight 0.20)
+    memory_entries = metrics.get("memory_percent", [])
+    cpu_entries = metrics.get("cpu_usage", [])
+    max_mem = max(
+        (entry.get("value", 0) for entry in memory_entries), default=0
+    )
+    max_cpu = max(
+        (entry.get("value", 0) for entry in cpu_entries), default=0
+    )
+    if max_mem > 90:
+        resource_factor = 1.0
+    elif max_cpu > 1.0:
+        resource_factor = 0.8
+    else:
+        resource_factor = 0.0
+    score += 0.20 * resource_factor
+
+    return min(score, 1.0)
 
 
 def extract_restart_counts(metrics: dict) -> dict:

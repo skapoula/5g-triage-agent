@@ -46,8 +46,8 @@ class TestDefaultValues:
         with patch.dict(os.environ, _CLEAN_ENV, clear=True):
             config = TriageAgentConfig(llm_api_key="test-key")
 
-        assert config.prometheus_url == "http://prometheus:9090"
-        assert config.loki_url == "http://loki:3100"
+        assert config.prometheus_url == "http://kube-prom-kube-prometheus-prometheus.monitoring:9090"
+        assert config.loki_url == "http://loki.monitoring:3100"
 
     def test_mcp_timeout_default(self) -> None:
         """MCP timeout should default to 3.0 seconds."""
