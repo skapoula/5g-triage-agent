@@ -1,0 +1,43 @@
+{
+  "env": {
+    "MEMGRAPH_HOST": "localhost",
+    "MEMGRAPH_PORT": "7687",
+    "PROMETHEUS_URL": "http://localhost:9090",
+    "LOKI_URL": "http://localhost:3100",
+    "LANGSMITH_PROJECT": "5g-triage-agent-v3",
+    "LLM_API_KEY": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(pytest*)",
+      "Bash(mgconsole*)",
+      "Bash(curl*prometheus*)",
+      "Bash(curl*loki*)",
+      "Bash(pip install*)",
+      "Bash(uvicorn*)",
+      "Bash(ruff*)",
+      "Bash(mypy*)",
+      "Bash(.venv/bin/pytest:*)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(.venv/bin/mypy:*)",
+      "Bash(.venv/bin/ruff check:*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(kubectl delete*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff check --fix $CLAUDE_FILE_PATH 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

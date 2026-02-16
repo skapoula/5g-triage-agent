@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memgraph-pvc
+  namespace: 5g-monitoring
+  labels:
+    app: triage-agent
+    component: memgraph
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Adjust storageClassName for your cluster:
+  # - "standard" for GKE
+  # - "gp2" for AWS EKS
+  # - "default" for most clusters
+  # - "local-path" for k3s
+  storageClassName: local-path

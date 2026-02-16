@@ -1,0 +1,120 @@
+# docker-compose.yaml
+# Local development environment for 5G TriageAgent
+#
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose logs -f        # View logs
+#   docker-compose down           # Stop all services
+#   docker-compose down -v        # Stop and remove volumes
+
+version: '3.8'
+
+services:
+  # Memgraph - Graph database for 3GPP DAGs and IMSI traces
+  memgraph:
+    image: memgraph/memgraph:2.14
+    container_name: memgraph-dev
+    ports:
+      - "7687:7687"   # Bolt protocol
+      - "7444:7444"   # Web interface (optional)
+    volumes:
+      - memgraph-data:/var/lib/memgraph
+      - ./dags:/dags:ro
+    command:
+      - "--storage-snapshot-interval-sec=60"
+      - "--storage-wal-enabled=true"
+      - "--memory-limit=256"
+      - "--log-level=WARNING"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo 'RETURN 1;' | mgconsole --host localhost --port 7687"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - triage-net
+
+  # DAG Loader - Initializes Memgraph with reference DAGs
+  dag-loader:
+    image: memgraph/memgraph:2.14
+    container_name: dag-loader
+    depends_on:
+      memgraph:
+        condition: service_healthy
+    volumes:
+      - ./dags:/dags:ro
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Loading DAGs into Memgraph..."
+        for f in /dags/*.cypher; do
+          echo "Loading: $$f"
+          mgconsole --host memgraph --port 7687 < "$$f"
+        done
+        echo "Verifying DAGs..."
+        mgconsole --host memgraph --port 7687 <<< "MATCH (t:ReferenceTrace) RETURN t.name, t.spec;"
+        echo "DAG loading complete!"
+    networks:
+      - triage-net
+
+  # Prometheus - Metrics (mock for development)
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus-dev
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./dev/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    networks:
+      - triage-net
+
+  # Loki - Logs (mock for development)
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: loki-dev
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - triage-net
+
+  # Triage Agent - Main application
+  triage-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: triage-agent-dev
+    ports:
+      - "8000:8000"
+    environment:
+      - MEMGRAPH_HOST=memgraph
+      - MEMGRAPH_PORT=7687
+      - PROMETHEUS_URL=http://prometheus:9090
+      - LOKI_URL=http://loki:3100
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_PROJECT=5g-triage-agent-dev
+    depends_on:
+      memgraph:
+        condition: service_healthy
+      dag-loader:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - triage-net
+
+volumes:
+  memgraph-data:
+    driver: local
+
+networks:
+  triage-net:
+    driver: bridge

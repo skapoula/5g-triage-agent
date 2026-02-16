@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage-agent
+spec:
+  template:
+    spec:
+      # Init container: preload DAGs into Memgraph via Cypher scripts
+      initContainers:
+      - name: dag-loader
+        image: memgraph/memgraph:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Wait for Memgraph to be ready (Bolt protocol on port 7687)
+          until echo "RETURN 1;" | mgconsole --host localhost --port 7687 2>/dev/null; do
+            echo "Waiting for Memgraph..."
+            sleep 1
+          done
+          
+          echo "Memgraph ready. Loading DAGs..."
+          
+          # Load each Cypher DAG definition from ConfigMap
+          for cypher_file in /dags/*.cypher; do
+            echo "Loading DAG from: $cypher_file"
+            mgconsole --host localhost --port 7687 < "$cypher_file"
+            echo "  âœ“ Loaded $cypher_file"
+          done
+          
+          # Verify DAGs loaded
+          dag_count=$(echo "MATCH (t:ReferenceTrace) RETURN count(t);" | mgconsole --host localhost --port 7687 --output-format csv | tail -1)
+          echo "Total DAGs loaded: $dag_count"
+          
+          echo "DAG loading complete!"
+        volumeMounts:
+        - name: dag-definitions
+          mountPath: /dags
+          readOnly: true
+        env:
+        - name: MEMGRAPH_HOST
+          value: "localhost"
+      
+      # Main containers (Memgraph + triage-agent)
+      containers:
+      - name: memgraph
+        image: memgraph/memgraph:latest
+        ports:
+        - containerPort: 7687  # Bolt protocol
+        args: ["--storage-snapshot-interval-sec=60", "--storage-wal-enabled=true", "--memory-limit=256"]
+        volumeMounts:
+        - name: memgraph-data
+          mountPath: /var/lib/memgraph
+        resources:
+          requests:
+            cpu: 0.25
+            memory: 128Mi
+          limits:
+            cpu: 0.5
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "echo 'RETURN 1;' | mgconsole --host localhost --port 7687"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      
+      - name: triage-agent
+        image: triage-agent:v3.2
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MEMGRAPH_HOST
+          value: "localhost"
+        - name: MEMGRAPH_PORT
+          value: "7687"
+        resources:
+          requests:
+            cpu: 1
+            memory: 2Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      
+      volumes:
+      - name: dag-definitions
+        configMap:
+          name: dag-definitions
+      - name: memgraph-data
+        persistentVolumeClaim:
+          claimName: memgraph-pvc

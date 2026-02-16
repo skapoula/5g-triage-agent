@@ -1,0 +1,13 @@
+route:
+  receiver: 'triage-agent'
+  routes:
+  - match:
+      severity: critical
+    receiver: 'triage-agent'
+
+receivers:
+- name: 'triage-agent'
+  webhook_configs:
+  - url: 'http://triage-agent:8000/webhook'
+    send_resolved: false
+    max_alerts: 0  # Send all alerts

@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dag-definitions
+  namespace: 5g-monitoring
+  labels:
+    app: triage-agent
+    component: dag-definitions
+data:
+  authentication_5g_aka.cypher: |
+    // Authentication_5G_AKA sub-DAG (TS 33.501 Fig. 6.1.3.2-1)
+    // This is a sub-procedure called from Registration_General at step 9.
+
+    MATCH (t:ReferenceTrace {name: "Authentication_5G_AKA"}) DETACH DELETE t;
+
+    CREATE (t:ReferenceTrace {
+        name: "Authentication_5G_AKA",
+        spec: "TS 33.501 6.1.3.2",
+        version: "Rel-17",
+        procedure: "authentication"
+    });
+
+    UNWIND [
+        {order: 1, nf: "AMF", action: "Nausf_UEAuthentication_Authenticate Request", keywords: ["Nausf_UEAuthentication", "Authenticate", "SUPI", "SN-name"], optional: false, failure_patterns: ["*AUSF*timeout*", "*Nausf*fail*"]},
+        {order: 2, nf: "AUSF", action: "Nudm_UEAuthentication_Get Request", keywords: ["Nudm_UEAuthentication", "Get", "SUPI"], optional: false, failure_patterns: ["*UDM*unreachable*", "*Nudm*timeout*"]},
+        {order: 3, nf: "UDM", action: "Authentication Vector Generation", keywords: ["AV", "Authentication Vector", "RAND", "AUTN", "XRES*", "KAUSF"], optional: false, failure_patterns: ["*AV*generation*fail*", "*subscriber*not*found*"]},
+        {order: 4, nf: "AUSF", action: "Nausf_UEAuthentication_Authenticate Response", keywords: ["5G-AIA", "Authentication Response", "RAND", "AUTN", "HXRES*"], optional: false},
+        {order: 5, nf: "AMF", action: "Authentication Request to UE", keywords: ["Authentication Request", "RAND", "AUTN", "ngKSI"], optional: false},
+        {order: 6, nf: "UE", action: "Authentication Response", keywords: ["RES*", "Authentication Response"], optional: false, failure_patterns: ["*auth*reject*", "*MAC*failure*", "*sync*failure*"]},
+        {order: 7, nf: "AMF", action: "Nausf_UEAuthentication_Authenticate (RES*)", keywords: ["RES*", "verification", "Nausf_UEAuthentication"], optional: false},
+        {order: 8, nf: "AUSF", action: "RES* Verification Success", keywords: ["RES*", "XRES*", "verification", "success", "KSEAF"], optional: false, failure_patterns: ["*RES*mismatch*", "*verification*fail*"]}
+    ] AS step
+    
+    CREATE (e:RefEvent {
+        order: step.order,
+        nf: step.nf,
+        action: step.action,
+        keywords: step.keywords,
+        optional: coalesce(step.optional, false),
+        failure_patterns: coalesce(step.failure_patterns, [])
+    });
+
+    MATCH (t:ReferenceTrace {name: "Authentication_5G_AKA"}), (e:RefEvent)
+    WHERE e.order IS NOT NULL
+    CREATE (t)-[:STEP {order: e.order}]->(e);
+
+    MATCH (t:ReferenceTrace {name: "Authentication_5G_AKA"})-[:STEP]->(e1:RefEvent)
+    MATCH (t)-[:STEP]->(e2:RefEvent)
+    WHERE e2.order = e1.order + 1
+    CREATE (e1)-[:NEXT {delta: "success"}]->(e2);
+
+  registration_general.cypher: |
+    // Registration main DAG (TS 23.502 Fig. 4.2.2.2.2-1)
+    // Links to Authentication_5G_AKA sub-DAG at step 9.
+
+    MATCH (t:ReferenceTrace {name: "Registration_General"}) DETACH DELETE t;
+
+    CREATE (t:ReferenceTrace {
+        name: "Registration_General",
+        spec: "TS 23.502 4.2.2.2.2",
+        version: "Rel-17",
+        procedure: "registration"
+    });
+
+    UNWIND [
+        {order: 1, nf: "UE", action: "Registration Request", keywords: ["Registration Request", "Initial Registration", "SUCI"], optional: false, failure_patterns: ["*registration*reject*"]},
+        {order: 2, nf: "AMF", action: "AMF selection", keywords: ["AMF selection"], optional: false},
+        {order: 3, nf: "New AMF", action: "Registration Request", keywords: ["Registration Request"], optional: false},
+        {order: 4, nf: "New AMF", action: "Namf_Communication_UEContextTransfer", keywords: ["UEContextTransfer"], optional: true},
+        {order: 5, nf: "Old AMF", action: "Namf_Communication_UEContextTransfer response", keywords: ["UEContextTransfer response"], optional: true},
+        {order: 6, nf: "AMF", action: "Identity Request (optional)", keywords: ["Identity Request"], optional: true},
+        {order: 7, nf: "UE", action: "Identity Response", keywords: ["Identity Response"], optional: true},
+        {order: 8, nf: "AMF", action: "AUSF selection", keywords: ["AUSF selection", "NRF", "Nnrf_NFDiscovery"], optional: false, failure_patterns: ["*NRF*unreachable*", "*AUSF*not*found*"]},
+        {order: 9, nf: "AMF", action: "Authentication/Security", keywords: ["Authentication", "Security", "AUSF", "AKA"], sub_dag: "Authentication_5G_AKA", optional: false, failure_patterns: ["*auth*fail*", "*security*mode*reject*"]},
+        {order: 10, nf: "AMF", action: "Namf_Communication_RegistrationStatusUpdate", keywords: ["RegistrationStatusUpdate"], optional: false},
+        {order: 11, nf: "AMF", action: "Identity Request/Response (if needed)", keywords: ["Identity Request", "Identity Response"], optional: true},
+        {order: 12, nf: "AMF", action: "N5g-eir_EquipmentIdentityCheck_Get", keywords: ["EquipmentIdentityCheck"], optional: true},
+        {order: 13, nf: "AMF", action: "UDM selection", keywords: ["UDM selection", "NRF", "Nnrf_NFDiscovery"], optional: false, failure_patterns: ["*UDM*not*found*"]},
+        {order: 14, nf: "UDM", action: "Nudm_UECM_Registration", keywords: ["Nudm_UECM_Registration"], optional: false, failure_patterns: ["*UECM*fail*"]},
+        {order: 15, nf: "UDM", action: "Nudm_SDM_Get", keywords: ["Nudm_SDM_Get", "subscription"], optional: false, failure_patterns: ["*SDM*fail*", "*subscription*not*found*"]},
+        {order: 16, nf: "UDM", action: "Nudm_SDM_Subscribe", keywords: ["Nudm_SDM_Subscribe"], optional: false},
+        {order: 17, nf: "AMF", action: "PCF selection", keywords: ["PCF selection", "NRF"], optional: false},
+        {order: 18, nf: "AMF", action: "AM Policy Association Establishment", keywords: ["AM Policy", "Association", "Npcf"], optional: false, failure_patterns: ["*PCF*reject*", "*policy*fail*"]},
+        {order: 19, nf: "AMF", action: "Nsmf_PDUSession_UpdateSMContext", keywords: ["Nsmf_PDUSession", "UpdateSMContext"], optional: false},
+        {order: 20, nf: "AMF", action: "UE Context Modification Request", keywords: ["UE Context Modification"], optional: false},
+        {order: 21, nf: "AMF", action: "Registration Accept", keywords: ["Registration Accept"], optional: false, success_log: "Registration Accept sent"},
+        {order: 22, nf: "UE", action: "Registration Complete", keywords: ["Registration Complete"], optional: false},
+        {order: 23, nf: "AMF", action: "N2 message", keywords: ["N2 message"], optional: false},
+        {order: 24, nf: "UDM", action: "Nudm_UECM_Update", keywords: ["Nudm_UECM_Update"], optional: false}
+    ] AS step
+
+    CREATE (e:RefEvent {
+        order: step.order,
+        nf: step.nf,
+        action: step.action,
+        keywords: step.keywords,
+        sub_dag: step.sub_dag,
+        optional: coalesce(step.optional, false),
+        failure_patterns: coalesce(step.failure_patterns, []),
+        success_log: step.success_log
+    });
+
+    MATCH (t:ReferenceTrace {name: "Registration_General"}), (e:RefEvent)
+    WHERE e.order IS NOT NULL
+    CREATE (t)-[:STEP {order: e.order}]->(e);
+
+    MATCH (t:ReferenceTrace {name: "Registration_General"})-[:STEP]->(e1:RefEvent)
+    MATCH (t)-[:STEP]->(e2:RefEvent)
+    WHERE e2.order = e1.order + 1
+    CREATE (e1)-[:NEXT {delta: "success"}]->(e2);
+
+    // Link to Authentication sub-DAG
+    MATCH (reg:RefEvent {order: 9, action: "Authentication/Security"})
+    MATCH (auth:ReferenceTrace {name: "Authentication_5G_AKA"})
+    CREATE (reg)-[:USES_SUB_DAG]->(auth);
+
+  pdu_session_establishment.cypher: |
+    // PDU Session Establishment DAG (TS 23.502 Fig. 4.3.2.2.1-1)
+
+    MATCH (t:ReferenceTrace {name: "PDU_Session_Establishment"}) DETACH DELETE t;
+
+    CREATE (t:ReferenceTrace {
+        name: "PDU_Session_Establishment",
+        spec: "TS 23.502 4.3.2.2.1",
+        version: "Rel-17",
+        procedure: "pdu_session"
+    });
+
+    UNWIND [
+        {order: 1, nf: "UE", action: "PDU Session Establishment Request", keywords: ["PDU Session Establishment", "Request", "DNN", "S-NSSAI"], optional: false},
+        {order: 2, nf: "AMF", action: "SMF selection", keywords: ["SMF selection", "NRF", "Nnrf_NFDiscovery"], optional: false, failure_patterns: ["*SMF*not*found*"]},
+        {order: 3, nf: "AMF", action: "Nsmf_PDUSession_CreateSMContext Request", keywords: ["Nsmf_PDUSession", "CreateSMContext", "Request"], optional: false},
+        {order: 4, nf: "SMF", action: "PDU Session authentication/authorization", keywords: ["authentication", "authorization", "DN-AAA"], optional: true},
+        {order: 5, nf: "SMF", action: "UPF selection", keywords: ["UPF selection", "NRF"], optional: false, failure_patterns: ["*UPF*not*found*"]},
+        {order: 6, nf: "SMF", action: "N4 Session Establishment Request", keywords: ["N4", "Session Establishment", "PFCP"], optional: false, failure_patterns: ["*PFCP*timeout*", "*N4*fail*"]},
+        {order: 7, nf: "UPF", action: "N4 Session Establishment Response", keywords: ["N4", "Session Establishment", "Response"], optional: false},
+        {order: 8, nf: "SMF", action: "PCF selection and SM Policy Association", keywords: ["PCF", "SM Policy", "Npcf_SMPolicyControl"], optional: false},
+        {order: 9, nf: "SMF", action: "Nsmf_PDUSession_CreateSMContext Response", keywords: ["CreateSMContext", "Response"], optional: false},
+        {order: 10, nf: "AMF", action: "N2 PDU Session Request to RAN", keywords: ["N2", "PDU Session Request"], optional: false},
+        {order: 11, nf: "RAN", action: "AN-specific resource setup", keywords: ["resource setup", "QoS flow"], optional: false},
+        {order: 12, nf: "RAN", action: "N2 PDU Session Response", keywords: ["N2", "PDU Session Response"], optional: false},
+        {order: 13, nf: "AMF", action: "Nsmf_PDUSession_UpdateSMContext Request", keywords: ["UpdateSMContext", "Request"], optional: false},
+        {order: 14, nf: "SMF", action: "N4 Session Modification", keywords: ["N4", "Session Modification", "PFCP"], optional: false},
+        {order: 15, nf: "SMF", action: "Nsmf_PDUSession_UpdateSMContext Response", keywords: ["UpdateSMContext", "Response"], optional: false},
+        {order: 16, nf: "AMF", action: "PDU Session Establishment Accept", keywords: ["PDU Session Establishment", "Accept"], optional: false, success_log: "PDU Session Establishment Accept sent"}
+    ] AS step
+
+    CREATE (e:RefEvent {
+        order: step.order,
+        nf: step.nf,
+        action: step.action,
+        keywords: step.keywords,
+        optional: coalesce(step.optional, false),
+        failure_patterns: coalesce(step.failure_patterns, []),
+        success_log: step.success_log
+    });
+
+    MATCH (t:ReferenceTrace {name: "PDU_Session_Establishment"}), (e:RefEvent)
+    WHERE e.order IS NOT NULL
+    CREATE (t)-[:STEP {order: e.order}]->(e);
+
+    MATCH (t:ReferenceTrace {name: "PDU_Session_Establishment"})-[:STEP]->(e1:RefEvent)
+    MATCH (t)-[:STEP]->(e2:RefEvent)
+    WHERE e2.order = e1.order + 1
+    CREATE (e1)-[:NEXT {delta: "success"}]->(e2);

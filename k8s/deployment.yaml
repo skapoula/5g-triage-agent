@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage-agent
+spec:
+  replicas: 2  # For availability
+  template:
+    spec:
+      containers:
+      - name: triage-agent
+        image: triage-agent:v3.2
+        ports:
+        - containerPort: 8000  # Webhook endpoint
+        env:
+        - name: MEMGRAPH_HOST
+          value: "localhost"  # Sidecar
+        - name: MEMGRAPH_PORT
+          value: "7687"
+        - name: LLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: 1
+            memory: 2Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+        
+      - name: memgraph
+        image: memgraph/memgraph:latest
+        ports:
+        - containerPort: 7687  # Bolt protocol
+        args: ["--storage-snapshot-interval-sec=60", "--storage-wal-enabled=true", "--memory-limit=256"]
+        volumeMounts:
+        - name: memgraph-data
+          mountPath: /var/lib/memgraph
+        resources:
+          requests:
+            cpu: 0.25
+            memory: 128Mi
+          limits:
+            cpu: 0.5
+            memory: 256Mi
+      
+      volumes:
+      - name: memgraph-data
+        persistentVolumeClaim:
+          claimName: memgraph-pvc
