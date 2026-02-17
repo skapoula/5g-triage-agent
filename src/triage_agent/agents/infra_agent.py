@@ -4,7 +4,17 @@ Rule-based (no LLM). Queries Prometheus via MCP for pod-level health,
 computes an infrastructure score, and forwards findings to RCAAgent.
 """
 
+from datetime import datetime, timezone
+from typing import Any
+
+from langsmith import traceable
+
 from triage_agent.state import TriageState
+
+# Known 5G NF names for extraction from alert labels/pod names
+_KNOWN_NFS = frozenset(
+    {"amf", "smf", "upf", "nrf", "ausf", "udm", "udr", "pcf", "nssf"}
+)
 
 # --- Prometheus queries for pod-level metrics ---
 
@@ -56,7 +66,7 @@ INFRA_PROMETHEUS_QUERIES = [
 # | Resource Saturation          | 0.20   | Mem>90%: 1.0, CPU>1.0core: 0.8, Normal: 0.0         |
 
 
-def compute_infrastructure_score(metrics: dict) -> float:
+def compute_infrastructure_score(metrics: dict[str, Any]) -> float:
     """Compute weighted infra score from pod metrics. Returns 0.0-1.0."""
     score = 0.0
 
@@ -110,40 +120,136 @@ def compute_infrastructure_score(metrics: dict) -> float:
     return min(score, 1.0)
 
 
-def extract_restart_counts(metrics: dict) -> dict:
-    raise NotImplementedError
+def extract_restart_counts(metrics: dict[str, Any]) -> dict[str, int]:
+    """Return {pod_name: restart_count} for all pods in pod_restarts."""
+    result: dict[str, int] = {}
+    for entry in metrics.get("pod_restarts", []):
+        pod = entry.get("pod", "unknown")
+        result[pod] = entry.get("value", 0)
+    return result
 
 
-def extract_oom_events(metrics: dict) -> dict:
-    raise NotImplementedError
+def extract_oom_events(metrics: dict[str, Any]) -> dict[str, int]:
+    """Return {pod_name: oom_count} for pods with OOM kills."""
+    result: dict[str, int] = {}
+    for entry in metrics.get("oom_kills", []):
+        pod = entry.get("pod", "unknown")
+        value = entry.get("value", 0)
+        if value > 0:
+            result[pod] = value
+    return result
 
 
-def extract_resource_metrics(metrics: dict) -> dict:
-    raise NotImplementedError
+def extract_resource_metrics(metrics: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Return {pod_name: {"cpu": float, "memory_percent": float}} from resource metrics."""
+    result: dict[str, dict[str, float]] = {}
+    for entry in metrics.get("cpu_usage", []):
+        pod = entry.get("pod", "unknown")
+        if pod not in result:
+            result[pod] = {"cpu": 0.0, "memory_percent": 0.0}
+        result[pod]["cpu"] = entry.get("value", 0.0)
+    for entry in metrics.get("memory_percent", []):
+        pod = entry.get("pod", "unknown")
+        if pod not in result:
+            result[pod] = {"cpu": 0.0, "memory_percent": 0.0}
+        result[pod]["memory_percent"] = entry.get("value", 0.0)
+    return result
 
 
-def extract_node_status(metrics: dict) -> dict:
-    raise NotImplementedError
+def extract_node_status(metrics: dict[str, Any]) -> dict[str, str]:
+    """Return {pod_name: phase_string} from pod_status entries."""
+    result: dict[str, str] = {}
+    for entry in metrics.get("pod_status", []):
+        pod = entry.get("pod", "unknown")
+        result[pod] = entry.get("phase", "Unknown")
+    return result
 
 
-def count_concurrent_failures(metrics: dict) -> int:
-    raise NotImplementedError
+def count_concurrent_failures(metrics: dict[str, Any]) -> int:
+    """Count distinct pods experiencing any failure condition."""
+    failing_pods: set[str] = set()
+
+    for entry in metrics.get("pod_restarts", []):
+        if entry.get("value", 0) > 0:
+            failing_pods.add(entry.get("pod", "unknown"))
+
+    for entry in metrics.get("oom_kills", []):
+        if entry.get("value", 0) > 0:
+            failing_pods.add(entry.get("pod", "unknown"))
+
+    for entry in metrics.get("pod_status", []):
+        phase = entry.get("phase", "Running")
+        if phase not in ("Running",):
+            failing_pods.add(entry.get("pod", "unknown"))
+
+    return len(failing_pods)
 
 
-def extract_critical_events(metrics: dict) -> list:
-    raise NotImplementedError
+def extract_critical_events(metrics: dict[str, Any]) -> list[dict[str, object]]:
+    """Identify critical infrastructure events (OOM, high restarts, failed pods)."""
+    events: list[dict[str, object]] = []
+
+    for entry in metrics.get("oom_kills", []):
+        if entry.get("value", 0) > 0:
+            events.append({
+                "type": "oom_kill",
+                "pod": entry.get("pod", "unknown"),
+                "container": entry.get("container", ""),
+                "value": entry.get("value", 0),
+            })
+
+    for entry in metrics.get("pod_restarts", []):
+        if entry.get("value", 0) > 5:
+            events.append({
+                "type": "excessive_restarts",
+                "pod": entry.get("pod", "unknown"),
+                "container": entry.get("container", ""),
+                "value": entry.get("value", 0),
+            })
+
+    for entry in metrics.get("pod_status", []):
+        phase = entry.get("phase", "Running")
+        if phase in ("Failed", "Unknown", "CrashLoopBackOff"):
+            events.append({
+                "type": "pod_failure",
+                "pod": entry.get("pod", "unknown"),
+                "phase": phase,
+            })
+
+    return events
 
 
-def parse_timestamp(ts: str):
-    """Parse ISO timestamp from alert payload."""
-    raise NotImplementedError
+def parse_timestamp(ts: str) -> float:
+    """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return dt.replace(tzinfo=timezone.utc if dt.tzinfo is None else dt.tzinfo).timestamp()
 
 
-def extract_nfs_from_alert(alert: dict) -> list[str]:
+def extract_nfs_from_alert(alert: dict[str, Any]) -> list[str]:
     """Extract affected NF names from alert labels."""
-    raise NotImplementedError
+    labels = alert.get("labels", {})
+    nfs: list[str] = []
+
+    # Primary: explicit 'nf' label (may be comma-separated)
+    nf_label = labels.get("nf", "")
+    if nf_label:
+        for part in nf_label.split(","):
+            name = part.strip().lower()
+            if name:
+                nfs.append(name)
+
+    # Fallback: extract NF prefix from pod name label
+    if not nfs:
+        pod_label = labels.get("pod", "")
+        if pod_label:
+            prefix = pod_label.split("-")[0].lower()
+            if prefix in _KNOWN_NFS:
+                nfs.append(prefix)
+
+    return nfs
 
 
+@traceable(name="InfraAgent")
 def infra_agent(state: TriageState) -> TriageState:
     """InfraAgent entry point. Rule-based, no LLM."""
     alert = state["alert"]
@@ -155,7 +261,7 @@ def infra_agent(state: TriageState) -> TriageState:
 
     # MCP query to Prometheus
     # metrics = mcp_client.query_prometheus(queries=INFRA_PROMETHEUS_QUERIES, time_range=time_window)
-    metrics = {}  # TODO: wire up MCP client
+    metrics: dict[str, Any] = {}  # TODO: wire up MCP client
 
     infra_score = compute_infrastructure_score(metrics)
 
