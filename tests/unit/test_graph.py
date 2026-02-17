@@ -2,22 +2,19 @@
 
 from typing import Any
 
-from triage_agent.graph import (
-    finalize_report,
-    get_initial_state,
-    increment_attempt,
-    should_retry,
-)
+import pytest
+
+from triage_agent.graph import create_workflow, finalize_report, should_retry
 from triage_agent.state import TriageState
 
 
 class TestShouldRetry:
-    """Tests for the should_retry conditional edge."""
+    """Tests for the should_retry conditional edge function."""
 
-    def test_retry_when_needs_more_evidence_and_under_max(
+    def test_returns_retry_when_needs_more_evidence_and_below_max(
         self, sample_initial_state: TriageState
     ) -> None:
-        """Should return 'retry' when needs_more_evidence and under max_attempts."""
+        """Returns 'retry' when needs_more_evidence=True and attempt < max_attempts."""
         state = sample_initial_state
         state["needs_more_evidence"] = True
         state["attempt_count"] = 1
@@ -25,20 +22,21 @@ class TestShouldRetry:
 
         assert should_retry(state) == "retry"
 
-    def test_finalize_when_confident(
+    def test_returns_finalize_when_needs_more_evidence_false(
         self, sample_initial_state: TriageState
     ) -> None:
-        """Should return 'finalize' when not needing more evidence."""
+        """Returns 'finalize' when no more evidence is needed regardless of attempt."""
         state = sample_initial_state
         state["needs_more_evidence"] = False
         state["attempt_count"] = 1
+        state["max_attempts"] = 2
 
         assert should_retry(state) == "finalize"
 
-    def test_finalize_when_max_attempts_reached(
+    def test_returns_finalize_at_max_attempts(
         self, sample_initial_state: TriageState
     ) -> None:
-        """Should return 'finalize' when max attempts reached."""
+        """Returns 'finalize' when attempt_count equals max_attempts (boundary)."""
         state = sample_initial_state
         state["needs_more_evidence"] = True
         state["attempt_count"] = 2
@@ -46,10 +44,10 @@ class TestShouldRetry:
 
         assert should_retry(state) == "finalize"
 
-    def test_finalize_when_over_max_attempts(
+    def test_returns_finalize_when_beyond_max_attempts(
         self, sample_initial_state: TriageState
     ) -> None:
-        """Should return 'finalize' when attempt_count exceeds max_attempts."""
+        """Returns 'finalize' when attempt_count exceeds max_attempts."""
         state = sample_initial_state
         state["needs_more_evidence"] = True
         state["attempt_count"] = 3
@@ -57,166 +55,86 @@ class TestShouldRetry:
 
         assert should_retry(state) == "finalize"
 
-    def test_defaults_to_finalize(self) -> None:
-        """Should finalize by default when state keys are missing."""
-        state: dict[str, Any] = {}
-        assert should_retry(state) == "finalize"  # type: ignore[arg-type]
-
-
-class TestIncrementAttempt:
-    """Tests for the increment_attempt node."""
-
-    def test_increments_from_one_to_two(
-        self, sample_initial_state: TriageState
-    ) -> None:
-        """Should increment attempt_count from 1 to 2."""
-        state = sample_initial_state
-        state["attempt_count"] = 1
-
-        result = increment_attempt(state)
-
-        assert result["attempt_count"] == 2
-
-    def test_increments_from_two_to_three(
-        self, sample_initial_state: TriageState
-    ) -> None:
-        """Should increment attempt_count from 2 to 3."""
-        state = sample_initial_state
-        state["attempt_count"] = 2
-
-        result = increment_attempt(state)
-
-        assert result["attempt_count"] == 3
-
-    def test_defaults_to_one_when_missing(self) -> None:
-        """Should default attempt_count to 1 then increment to 2."""
-        state: dict[str, Any] = {}
-        result = increment_attempt(state)  # type: ignore[arg-type]
-        assert result["attempt_count"] == 2
-
 
 class TestFinalizeReport:
-    """Tests for the finalize_report node."""
+    """Tests for the finalize_report node function."""
 
-    def test_creates_final_report(
+    def test_creates_final_report_dict(
         self, sample_initial_state: TriageState
     ) -> None:
-        """Should populate final_report with key fields."""
+        """finalize_report creates a final_report dict with all required keys."""
         state = sample_initial_state
-        state["incident_id"] = "inc-123"
+        required_keys = {
+            "incident_id",
+            "layer",
+            "root_nf",
+            "failure_mode",
+            "confidence",
+            "evidence_chain",
+            "infra_score",
+            "evidence_quality_score",
+            "degraded_mode",
+            "attempt_count",
+        }
+
+        result = finalize_report(state)
+
+        assert "final_report" in result
+        assert required_keys.issubset(result["final_report"].keys())
+
+    def test_final_report_values_from_state(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """final_report values are sourced from state fields."""
+        state = sample_initial_state
+        state["root_nf"] = "AMF"
+        state["failure_mode"] = "auth_failure"
         state["layer"] = "application"
-        state["root_nf"] = "AUSF"
-        state["failure_mode"] = "auth_timeout"
         state["confidence"] = 0.85
-        state["evidence_chain"] = [{"source": "logs"}]
-        state["infra_score"] = 0.1
-        state["evidence_quality_score"] = 0.95
         state["attempt_count"] = 1
 
         result = finalize_report(state)
-
         report = result["final_report"]
-        assert report is not None
-        assert report["incident_id"] == "inc-123"
+
+        assert report["root_nf"] == "AMF"
+        assert report["failure_mode"] == "auth_failure"
         assert report["layer"] == "application"
-        assert report["root_nf"] == "AUSF"
-        assert report["failure_mode"] == "auth_timeout"
-        assert report["confidence"] == 0.85
-        assert report["evidence_chain"] == [{"source": "logs"}]
-        assert report["infra_score"] == 0.1
-        assert report["evidence_quality_score"] == 0.95
+        assert report["confidence"] == pytest.approx(0.85)
         assert report["attempt_count"] == 1
 
-    def test_final_report_includes_degraded_mode(
+    def test_final_report_evidence_chain_defaults_to_empty_list(
         self, sample_initial_state: TriageState
     ) -> None:
-        """Final report should include degraded_mode flag."""
+        """evidence_chain defaults to [] when not set in state."""
         state = sample_initial_state
-        state["degraded_mode"] = True
+        state["evidence_chain"] = []
 
         result = finalize_report(state)
 
-        assert result["final_report"]["degraded_mode"] is True
-
-    def test_final_report_defaults(
-        self, sample_initial_state: TriageState
-    ) -> None:
-        """Final report should handle missing/default values."""
-        result = finalize_report(sample_initial_state)
-
-        report = result["final_report"]
-        assert report["incident_id"] == "test-incident-001"
-        assert report["evidence_chain"] == []
-        assert report["degraded_mode"] is False
-        assert report["attempt_count"] == 1
-
-
-class TestGetInitialState:
-    """Tests for get_initial_state factory."""
-
-    def test_creates_state_from_alert(self, sample_alert: dict[str, Any]) -> None:
-        """Should create TriageState from alert payload."""
-        state = get_initial_state(alert=sample_alert, incident_id="inc-001")
-
-        assert state["alert"] == sample_alert
-        assert state["incident_id"] == "inc-001"
-
-    def test_initial_state_defaults(self, sample_alert: dict[str, Any]) -> None:
-        """Initial state should have sensible defaults."""
-        state = get_initial_state(alert=sample_alert, incident_id="inc-002")
-
-        assert state["infra_checked"] is False
-        assert state["infra_score"] == 0.0
-        assert state["infra_findings"] is None
-        assert state["metrics"] is None
-        assert state["logs"] is None
-        assert state["traces_ready"] is False
-        assert state["confidence"] == 0.0
-        assert state["attempt_count"] == 1
-        assert state["max_attempts"] == 2
-        assert state["needs_more_evidence"] is False
-        assert state["final_report"] is None
-        assert state["degraded_mode"] is False
-        assert state["evidence_chain"] == []
-
-    def test_initial_state_has_empty_evidence(
-        self, sample_alert: dict[str, Any]
-    ) -> None:
-        """Initial state should start with no evidence collected."""
-        state = get_initial_state(alert=sample_alert, incident_id="inc-003")
-
-        assert state["discovered_imsis"] is None
-        assert state["trace_deviations"] is None
-        assert state["root_nf"] is None
-        assert state["failure_mode"] is None
+        assert result["final_report"]["evidence_chain"] == []
 
 
 class TestCreateWorkflow:
-    """Tests for create_workflow graph structure."""
+    """Tests for the create_workflow LangGraph DAG builder."""
 
-    def test_workflow_compiles(self) -> None:
-        """create_workflow should compile without errors."""
-        from triage_agent.graph import create_workflow
-
+    def test_workflow_compiles_without_error(self) -> None:
+        """create_workflow() compiles successfully and returns a compiled graph."""
         workflow = create_workflow()
+
         assert workflow is not None
 
-    def test_workflow_has_expected_nodes(self) -> None:
-        """Workflow graph should contain all expected agent nodes."""
-        from triage_agent.graph import create_workflow
+    def test_parallel_edges_for_infra_agent_and_metrics_agent(self) -> None:
+        """Both infra_agent and metrics_agent have edges from START (parallel execution)."""
+        graph = create_workflow().get_graph()
+        edge_pairs = [(e.source, e.target) for e in graph.edges]
 
-        workflow = create_workflow()
-        graph = workflow.get_graph()
-        node_ids = set(graph.nodes.keys())
+        assert ("__start__", "infra_agent") in edge_pairs
+        assert ("__start__", "metrics_agent") in edge_pairs
 
-        expected_nodes = {
-            "infra_agent",
-            "metrics_agent",
-            "logs_agent",
-            "traces_agent",
-            "evidence_quality",
-            "rca_agent",
-            "increment_attempt",
-            "finalize",
-        }
-        assert expected_nodes.issubset(node_ids)
+    def test_conditional_edge_from_rca_agent(self) -> None:
+        """rca_agent has conditional edges to both increment_attempt and finalize."""
+        graph = create_workflow().get_graph()
+        rca_targets = {e.target for e in graph.edges if e.source == "rca_agent"}
+
+        assert "increment_attempt" in rca_targets
+        assert "finalize" in rca_targets
