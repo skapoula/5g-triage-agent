@@ -123,6 +123,7 @@ def sample_initial_state(sample_alert: dict[str, Any]) -> TriageState:
         attempt_count=1,
         max_attempts=2,
         needs_more_evidence=False,
+        evidence_gaps=None,
         second_attempt_complete=False,
         final_report=None,
     )

@@ -41,5 +41,6 @@ class TriageState(TypedDict):
     attempt_count: int  # Current attempt (1-based)
     max_attempts: int  # Hard limit (default: 2)
     needs_more_evidence: bool
+    evidence_gaps: list[str] | None  # Identified evidence gaps for second attempt
     second_attempt_complete: bool
     final_report: dict | None
