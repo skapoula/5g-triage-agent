@@ -22,8 +22,8 @@ class TriageAgentConfig(BaseSettings):
     # LLM Configuration
     llm_api_key: str = ""  # Required in production
     llm_model: str = "qwen3-4b-instruct-2507.Q4_K_M.gguf"  # local default; override for openai/anthropic
-    llm_timeout: int = 30
-    llm_provider: Literal["openai", "anthropic", "local"] = "openai"
+    llm_timeout: int = 300
+    llm_provider: Literal["openai", "anthropic", "local"] = "local"
     # Env var: LLM_PROVIDER — selects LLM backend
     # "openai": ChatOpenAI using llm_api_key + llm_model
     # "anthropic": ChatAnthropic using llm_api_key + llm_model (requires langchain-anthropic)
@@ -33,6 +33,10 @@ class TriageAgentConfig(BaseSettings):
     # Defaults to the in-cluster Qwen3-4b KServe ClusterIP service (port 80)
     # NodePort fallback (external): http://10.0.1.2:30080/v1
 
+    # Kubernetes / 5G Core namespace
+    core_namespace: str = "5g-core"
+    # Env var: CORE_NAMESPACE — K8s namespace label used in Prometheus/Loki queries
+
     # Observability
     langsmith_project: str = "5g-triage-agent"
     langsmith_api_key: str = ""
@@ -40,6 +44,9 @@ class TriageAgentConfig(BaseSettings):
     model_config = {
         "env_prefix": "",
         "case_sensitive": False,
+        "env_file": ".env",           # load from .env if present
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",            # ignore unknown keys in .env file
     }
 
     @field_validator("memgraph_port")

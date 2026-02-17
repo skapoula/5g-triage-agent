@@ -90,17 +90,8 @@ services:
     container_name: triage-agent-dev
     ports:
       - "8000:8000"
-    environment:
-      - MEMGRAPH_HOST=memgraph
-      - MEMGRAPH_PORT=7687
-      - PROMETHEUS_URL=http://prometheus:9090
-      - LOKI_URL=http://loki:3100
-      - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
-      - LLM_BASE_URL=${LLM_BASE_URL:-http://qwen3-4b.ml-serving.svc.cluster.local/v1}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH_PROJECT=5g-triage-agent-dev
+    env_file:
+      - triage-agent.env           # operator creates this from triage-agent.env.example
     depends_on:
       memgraph:
         condition: service_healthy

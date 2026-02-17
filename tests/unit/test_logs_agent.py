@@ -599,7 +599,7 @@ class TestBuildLokiQueries:
     """
 
     def test_returns_list_of_strings(self, logs_dag: dict[str, Any]) -> None:
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         assert isinstance(queries, list)
         assert all(isinstance(q, str) for q in queries)
 
@@ -607,7 +607,7 @@ class TestBuildLokiQueries:
         self, logs_dag: dict[str, Any]
     ) -> None:
         """Each NF must have a base query filtering ERROR|WARN|FATAL."""
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         for nf in logs_dag["all_nfs"]:
             nf_lower = nf.lower()
             base_queries = [
@@ -622,7 +622,7 @@ class TestBuildLokiQueries:
         self, logs_dag: dict[str, Any]
     ) -> None:
         """All queries should target the 5g-core namespace."""
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         for q in queries:
             assert "5g-core" in q
 
@@ -630,7 +630,7 @@ class TestBuildLokiQueries:
         self, logs_dag: dict[str, Any]
     ) -> None:
         """Queries should match pods by NF name pattern."""
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         for nf in logs_dag["all_nfs"]:
             nf_lower = nf.lower()
             nf_queries = [q for q in queries if nf_lower in q]
@@ -646,7 +646,7 @@ class TestBuildLokiQueries:
           registration_accept: success_log + 2 failure_patterns = 3 queries
           + 1 base query = 7 total
         """
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         amf_queries = [q for q in queries if "amf" in q]
         assert len(amf_queries) == 7, (
             f"AMF should have 7 queries (1 base + 6 phase-specific), got {len(amf_queries)}"
@@ -656,7 +656,7 @@ class TestBuildLokiQueries:
         self, logs_dag: dict[str, Any]
     ) -> None:
         """NFs not listed as actors in any phase should only get the base query."""
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         # UDM is not an actor in any phase in logs_dag
         udm_queries = [q for q in queries if "udm" in q]
         assert len(udm_queries) == 1, (
@@ -666,14 +666,14 @@ class TestBuildLokiQueries:
     def test_empty_nfs_produces_no_queries(self) -> None:
         """Empty NF list should produce zero queries."""
         dag: dict[str, Any] = {"all_nfs": [], "phases": []}
-        queries = build_loki_queries(dag)
+        queries = build_loki_queries(dag, "5g-core")
         assert len(queries) == 0
 
     def test_failure_patterns_become_queries(
         self, logs_dag: dict[str, Any]
     ) -> None:
         """Each failure_pattern in a phase should generate a LogQL query."""
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         # Auth phase has failure_patterns: ["*auth*fail*", "*timeout*AUSF*"]
         # These should appear (regex-converted) in queries for AMF and AUSF
         auth_fail_queries = [
@@ -685,7 +685,7 @@ class TestBuildLokiQueries:
         self, logs_dag: dict[str, Any]
     ) -> None:
         """success_log from each phase should generate a LogQL query for its actors."""
-        queries = build_loki_queries(logs_dag)
+        queries = build_loki_queries(logs_dag, "5g-core")
         success_queries = [q for q in queries if "Authentication successful" in q]
         # AMF and AUSF are both actors in auth phase
         assert len(success_queries) >= 2

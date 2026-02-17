@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from triage_agent.agents.infra_agent import (
-    INFRA_PROMETHEUS_QUERIES,
+    build_infra_queries,
     compute_infrastructure_score,
     count_concurrent_failures,
     extract_critical_events,
@@ -257,22 +257,27 @@ class TestComputeInfrastructureScore:
 
 
 class TestInfraPrometheusQueries:
-    """Tests for INFRA_PROMETHEUS_QUERIES constant."""
+    """Tests for build_infra_queries() function."""
 
     def test_queries_defined(self) -> None:
-        """Ensure Prometheus queries are defined."""
-        assert len(INFRA_PROMETHEUS_QUERIES) > 0
+        """Ensure Prometheus queries are returned."""
+        assert len(build_infra_queries("5g-core")) > 0
 
     def test_queries_are_strings(self) -> None:
         """All queries should be non-empty strings."""
-        for query in INFRA_PROMETHEUS_QUERIES:
+        for query in build_infra_queries("5g-core"):
             assert isinstance(query, str)
             assert len(query) > 0
 
     def test_queries_target_5g_core_namespace(self) -> None:
-        """Queries should target 5g-core namespace."""
-        for query in INFRA_PROMETHEUS_QUERIES:
+        """Queries should target 5g-core namespace by default."""
+        for query in build_infra_queries("5g-core"):
             assert "5g-core" in query or "namespace" in query
+
+    def test_queries_use_custom_namespace(self) -> None:
+        """Queries should use the namespace passed as argument."""
+        for query in build_infra_queries("my-5g-ns"):
+            assert "my-5g-ns" in query
 
 
 # ===========================================================================

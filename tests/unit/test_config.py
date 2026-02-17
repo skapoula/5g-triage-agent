@@ -64,7 +64,7 @@ class TestDefaultValues:
             config = TriageAgentConfig(llm_api_key="test-key")
 
         assert config.llm_model == "qwen3-4b-instruct-2507.Q4_K_M.gguf"
-        assert config.llm_timeout == 30
+        assert config.llm_timeout == 300
 
     def test_langsmith_default_project(self) -> None:
         """LangSmith project should default to '5g-triage-agent'."""
@@ -245,10 +245,10 @@ class TestMemgraphUriProperty:
 class TestLLMProviderConfig:
     """Tests for llm_provider and llm_base_url fields."""
 
-    def test_llm_provider_defaults_to_openai(self) -> None:
+    def test_llm_provider_defaults_to_local(self) -> None:
         with patch.dict(os.environ, _CLEAN_ENV, clear=True):
             config = TriageAgentConfig(llm_api_key="test-key")
-        assert config.llm_provider == "openai"
+        assert config.llm_provider == "local"
 
     def test_llm_provider_from_env_anthropic(self) -> None:
         with patch.dict(os.environ, {**_CLEAN_ENV, "LLM_PROVIDER": "anthropic"}, clear=True):

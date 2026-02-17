@@ -11,20 +11,11 @@ spec:
         image: triage-agent:v3.2
         ports:
         - containerPort: 8000  # Webhook endpoint
-        env:
-        - name: MEMGRAPH_HOST
-          value: "localhost"  # Sidecar
-        - name: MEMGRAPH_PORT
-          value: "7687"
-        - name: LLM_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: llm-credentials
-              key: api-key
-        - name: LLM_PROVIDER
-          value: "openai"          # Override: openai | anthropic | local
-        - name: LLM_BASE_URL
-          value: "http://qwen3-4b.ml-serving.svc.cluster.local/v1"
+        envFrom:
+          - configMapRef:
+              name: triage-agent-config
+          - secretRef:
+              name: llm-credentials    # provides LLM_API_KEY + LANGSMITH_API_KEY
         resources:
           requests:
             cpu: 1

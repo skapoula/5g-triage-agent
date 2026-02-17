@@ -9,6 +9,7 @@ from typing import Any
 
 from langsmith import traceable
 
+from triage_agent.config import get_config
 from triage_agent.state import TriageState
 
 # Known 5G NF names for extraction from alert labels/pod names
@@ -18,43 +19,52 @@ _KNOWN_NFS = frozenset(
 
 # --- Prometheus queries for pod-level metrics ---
 
-INFRA_PROMETHEUS_QUERIES = [
-    # Pod restarts (1h window)
-    'label_replace(sum by (namespace, pod, container)'
-    '(increase(kube_pod_container_status_restarts_total'
-    '{namespace="5g-core", container=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*", '
-    'pod=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"}[1h])), '
-    '"report", "pod_restarts", "", "")',
-    # OOM kills (5m window)
-    'label_replace(sum by (pod, container) '
-    '(increase(kube_pod_container_status_restarts_total'
-    '{namespace="5g-core", container=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*", '
-    'pod=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"}[5m]) '
-    '* on(namespace, pod, container) group_left(reason) '
-    'kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}), '
-    '"report", "oom_kills_5m", "", "")',
-    # CPU usage rate (2m window)
-    'label_replace(sum by (pod, container) '
-    '(rate(container_cpu_usage_seconds_total'
-    '{namespace="5g-core", container=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*", '
-    'pod=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"}[2m])), '
-    '"report", "cpu_usage_rate_2m", "", "")',
-    # Memory usage percent
-    'label_replace((sum by (pod, container) '
-    '(container_memory_working_set_bytes'
-    '{namespace="5g-core", container=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*", '
-    'pod=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"}) '
-    '/ sum by (pod, container) '
-    '(kube_pod_container_resource_limits{resource="memory", namespace="5g-core", '
-    'container=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*", '
-    'pod=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"})) * 100, '
-    '"report", "memory_usage_percent", "", "")',
-    # Pod status
-    'label_replace(sum by (namespace, pod, phase) '
-    '(kube_pod_status_phase{namespace="5g-core", phase=~"Running|Pending|Unknown|Failed", '
-    'pod=~"^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"}) > 0, '
-    '"__name__", "pod_status", "", "")',
-]
+_NF_CONTAINER_RE = "^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"
+_NF_POD_RE = "^(nrf|pcf|amf|smf|ausf|udm|udr|upf|nssf|mongodb).*"
+
+
+def build_infra_queries(core_namespace: str) -> list[str]:
+    """Build PromQL queries scoped to the given K8s namespace."""
+    ns = core_namespace
+    cr = _NF_CONTAINER_RE
+    pr = _NF_POD_RE
+    return [
+        # Pod restarts (1h window)
+        f'label_replace(sum by (namespace, pod, container)'
+        f'(increase(kube_pod_container_status_restarts_total'
+        f'{{namespace="{ns}", container=~"{cr}", '
+        f'pod=~"{pr}"}}[1h])), '
+        f'"report", "pod_restarts", "", "")',
+        # OOM kills (5m window)
+        f'label_replace(sum by (pod, container) '
+        f'(increase(kube_pod_container_status_restarts_total'
+        f'{{namespace="{ns}", container=~"{cr}", '
+        f'pod=~"{pr}"}}[5m]) '
+        f'* on(namespace, pod, container) group_left(reason) '
+        f'kube_pod_container_status_last_terminated_reason{{reason="OOMKilled"}}), '
+        f'"report", "oom_kills_5m", "", "")',
+        # CPU usage rate (2m window)
+        f'label_replace(sum by (pod, container) '
+        f'(rate(container_cpu_usage_seconds_total'
+        f'{{namespace="{ns}", container=~"{cr}", '
+        f'pod=~"{pr}"}}[2m])), '
+        f'"report", "cpu_usage_rate_2m", "", "")',
+        # Memory usage percent
+        f'label_replace((sum by (pod, container) '
+        f'(container_memory_working_set_bytes'
+        f'{{namespace="{ns}", container=~"{cr}", '
+        f'pod=~"{pr}"}}) '
+        f'/ sum by (pod, container) '
+        f'(kube_pod_container_resource_limits{{resource="memory", namespace="{ns}", '
+        f'container=~"{cr}", '
+        f'pod=~"{pr}"}})) * 100, '
+        f'"report", "memory_usage_percent", "", "")',
+        # Pod status
+        f'label_replace(sum by (namespace, pod, phase) '
+        f'(kube_pod_status_phase{{namespace="{ns}", phase=~"Running|Pending|Unknown|Failed", '
+        f'pod=~"{pr}"}}) > 0, '
+        f'"__name__", "pod_status", "", "")',
+    ]
 
 # --- Infrastructure score: 4-factor weighted model ---
 #
@@ -260,7 +270,7 @@ def infra_agent(state: TriageState) -> TriageState:
     affected_nfs = extract_nfs_from_alert(alert)
 
     # MCP query to Prometheus
-    # metrics = mcp_client.query_prometheus(queries=INFRA_PROMETHEUS_QUERIES, time_range=time_window)
+    # metrics = mcp_client.query_prometheus(queries=build_infra_queries(get_config().core_namespace), time_range=time_window)
     metrics: dict[str, Any] = {}  # TODO: wire up MCP client
 
     infra_score = compute_infrastructure_score(metrics)

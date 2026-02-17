@@ -44,11 +44,12 @@ def wildcard_match(text: str, pattern: str) -> bool:
     return bool(re.search(f"(?i){regex_pattern}", text))
 
 
-def build_loki_queries(dag: dict[str, Any]) -> list[str]:
+def build_loki_queries(dag: dict[str, Any], core_namespace: str) -> list[str]:
     """Build LogQL queries for each NF: base ERROR/WARN/FATAL + phase-specific.
 
     Args:
         dag: DAG dict with 'all_nfs' and 'phases'.
+        core_namespace: K8s namespace where 5G core NF pods run.
 
     Returns:
         List of LogQL query strings.
@@ -59,19 +60,19 @@ def build_loki_queries(dag: dict[str, Any]) -> list[str]:
 
         # Base query: all ERROR/WARN/FATAL logs
         queries.append(
-            f'{{k8s_namespace_name="5g-core",k8s_pod_name=~".*{nf_lower}.*"}} |~ "ERROR|WARN|FATAL"'
+            f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "ERROR|WARN|FATAL"'
         )
 
         # Phase-specific pattern queries
         for phase in dag["phases"]:
             if nf in phase["actors"]:
                 queries.append(
-                    f'{{k8s_namespace_name="5g-core",k8s_pod_name=~".*{nf_lower}.*"}} |~ "{phase["success_log"]}"'
+                    f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "{phase["success_log"]}"'
                 )
                 for pattern in phase.get("failure_patterns", []):
                     loki_pattern = pattern.replace("*", ".*")
                     queries.append(
-                        f'{{k8s_namespace_name="5g-core",k8s_pod_name=~".*{nf_lower}.*"}} |~ "(?i){loki_pattern}"'
+                        f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "(?i){loki_pattern}"'
                     )
 
     return queries
@@ -264,7 +265,7 @@ def logs_agent(state: TriageState) -> TriageState:
     start = int(alert_time - 300)
     end = int(alert_time + 60)
 
-    queries = build_loki_queries(dag)
+    queries = build_loki_queries(dag, get_config().core_namespace)
 
     logs_raw: list[dict[str, Any]] = []
     if queries:
