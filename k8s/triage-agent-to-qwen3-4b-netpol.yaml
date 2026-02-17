@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: triage-agent-to-qwen3-4b
+  namespace: ml-serving
+  labels:
+    app.kubernetes.io/name: qwen3-4b
+    app.kubernetes.io/part-of: ml-serving
+spec:
+  # Applies to the qwen3-4b inference pod
+  podSelector:
+    matchLabels:
+      serving.kserve.io/inferenceservice: qwen3-4b
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          # kubernetes.io/metadata.name is auto-applied by k8s — no manual label needed
+          kubernetes.io/metadata.name: claudex
+    ports:
+    - port: 8080
+      protocol: TCP

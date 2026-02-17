@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-ml-serving
+  namespace: claudex
+spec:
+  podSelector:
+    matchLabels:
+      app: sentig
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS (required for cluster DNS resolution)
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # Allow egress to qwen3-4b inference pod in ml-serving
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ml-serving
+      podSelector:
+        matchLabels:
+          serving.kserve.io/inferenceservice: qwen3-4b
+    ports:
+    - port: 8080
+      protocol: TCP

@@ -30,6 +30,12 @@ dev = [
     "ruff>=0.8",
     "types-requests>=2.31",
 ]
+anthropic = [
+    "langchain-anthropic>=0.3",
+]
+
+[project.scripts]
+triage-agent = "triage_agent.__main__:main"
 
 [tool.ruff]
 target-version = "py311"

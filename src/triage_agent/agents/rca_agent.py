@@ -150,6 +150,68 @@ def format_trace_deviations_for_prompt(deviations: list[dict[str, Any]] | None) 
     return json.dumps(deviations, indent=2)
 
 
+def create_llm(
+    provider: str,
+    model: str,
+    api_key: str,
+    timeout: int,
+    base_url: str = "",
+) -> Any:
+    """Factory: construct the appropriate LangChain chat model.
+
+    Args:
+        provider: One of "openai", "anthropic", "local"
+        model: Model name string (provider-specific)
+        api_key: API key; empty string allowed for local provider
+        timeout: Request timeout in seconds
+        base_url: Only used for "local" provider
+
+    Returns:
+        A LangChain chat model with .invoke() method
+
+    Raises:
+        ImportError: If provider == "anthropic" and langchain-anthropic is not installed
+        ValueError: If provider == "local" and base_url is empty, or unknown provider
+    """
+    if provider == "openai":
+        return ChatOpenAI(
+            model=model,
+            api_key=SecretStr(api_key) if api_key else None,
+            temperature=0.1,
+            timeout=timeout,
+        )
+    elif provider == "anthropic":
+        try:
+            from langchain_anthropic import ChatAnthropic  # deferred: optional dependency
+        except ImportError as e:
+            raise ImportError(
+                "langchain-anthropic is required for the 'anthropic' provider. "
+                "Install it with: pip install triage-agent[anthropic]"
+            ) from e
+        return ChatAnthropic(  # type: ignore[return-value]
+            model=model,
+            api_key=SecretStr(api_key) if api_key else None,  # type: ignore[arg-type]
+            temperature=0.1,
+            timeout=timeout,
+        )
+    elif provider == "local":
+        if not base_url:
+            raise ValueError(
+                "llm_base_url must be set when llm_provider is 'local'. "
+                "Set LLM_BASE_URL env var to the OpenAI-compatible endpoint, "
+                "e.g. http://vllm-service.5g-core:8080/v1"
+            )
+        return ChatOpenAI(
+            model=model,
+            api_key=SecretStr(api_key) if api_key else SecretStr("local"),
+            base_url=base_url,
+            temperature=0.1,
+            timeout=timeout,
+        )
+    else:
+        raise ValueError(f"Unsupported llm_provider: '{provider}'")
+
+
 def llm_analyze_evidence(prompt: str, timeout: int | None = None) -> dict[str, Any]:
     """Call LLM with the RCA prompt. Returns parsed JSON response.
 
@@ -167,12 +229,13 @@ def llm_analyze_evidence(prompt: str, timeout: int | None = None) -> dict[str, A
     config = get_config()
     timeout_val = timeout or config.llm_timeout
 
-    # Initialize LLM client
-    llm = ChatOpenAI(
+    # Initialize LLM client via factory (supports openai / anthropic / local)
+    llm = create_llm(
+        provider=config.llm_provider,
         model=config.llm_model,
-        api_key=SecretStr(config.llm_api_key) if config.llm_api_key else None,
-        temperature=0.1,  # Low temperature for deterministic analysis
+        api_key=config.llm_api_key,
         timeout=timeout_val,
+        base_url=config.llm_base_url,
     )
 
     messages = [

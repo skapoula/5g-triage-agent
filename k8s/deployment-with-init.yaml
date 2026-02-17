@@ -72,6 +72,10 @@ spec:
           value: "localhost"
         - name: MEMGRAPH_PORT
           value: "7687"
+        - name: LLM_PROVIDER
+          value: "openai"          # Override: openai | anthropic | local
+        - name: LLM_BASE_URL
+          value: "http://qwen3-4b.ml-serving.svc.cluster.local/v1"
         resources:
           requests:
             cpu: 1

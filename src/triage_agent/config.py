@@ -1,7 +1,7 @@
 """Configuration management for TriageAgent."""
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -21,8 +21,17 @@ class TriageAgentConfig(BaseSettings):
 
     # LLM Configuration
     llm_api_key: str = ""  # Required in production
-    llm_model: str = "gpt-4o-mini"
+    llm_model: str = "qwen3-4b-instruct-2507.Q4_K_M.gguf"  # local default; override for openai/anthropic
     llm_timeout: int = 30
+    llm_provider: Literal["openai", "anthropic", "local"] = "openai"
+    # Env var: LLM_PROVIDER — selects LLM backend
+    # "openai": ChatOpenAI using llm_api_key + llm_model
+    # "anthropic": ChatAnthropic using llm_api_key + llm_model (requires langchain-anthropic)
+    # "local": ChatOpenAI with base_url for in-cluster vLLM/Ollama, no external api_key needed
+    llm_base_url: str = "http://qwen3-4b.ml-serving.svc.cluster.local/v1"
+    # Env var: LLM_BASE_URL — OpenAI-compatible base URL for the local provider
+    # Defaults to the in-cluster Qwen3-4b KServe ClusterIP service (port 80)
+    # NodePort fallback (external): http://10.0.1.2:30080/v1
 
     # Observability
     langsmith_project: str = "5g-triage-agent"

@@ -23,6 +23,8 @@ _CONFIG_ENV_KEYS = [
     "LLM_API_KEY",
     "LLM_MODEL",
     "LLM_TIMEOUT",
+    "LLM_PROVIDER",
+    "LLM_BASE_URL",
     "LANGSMITH_PROJECT",
     "LANGSMITH_API_KEY",
 ]
@@ -61,7 +63,7 @@ class TestDefaultValues:
         with patch.dict(os.environ, _CLEAN_ENV, clear=True):
             config = TriageAgentConfig(llm_api_key="test-key")
 
-        assert config.llm_model == "gpt-4o-mini"
+        assert config.llm_model == "qwen3-4b-instruct-2507.Q4_K_M.gguf"
         assert config.llm_timeout == 30
 
     def test_langsmith_default_project(self) -> None:
@@ -238,6 +240,42 @@ class TestMemgraphUriProperty:
             config = TriageAgentConfig()
 
         assert config.memgraph_uri == "bolt://mg-prod:17687"
+
+
+class TestLLMProviderConfig:
+    """Tests for llm_provider and llm_base_url fields."""
+
+    def test_llm_provider_defaults_to_openai(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.llm_provider == "openai"
+
+    def test_llm_provider_from_env_anthropic(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "LLM_PROVIDER": "anthropic"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.llm_provider == "anthropic"
+
+    def test_llm_provider_from_env_local(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "LLM_PROVIDER": "local"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.llm_provider == "local"
+
+    def test_llm_provider_invalid_raises(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            with pytest.raises(ValueError):
+                TriageAgentConfig(llm_api_key="key", llm_provider="grok")  # type: ignore[arg-type]
+
+    def test_llm_base_url_defaults_to_cluster_endpoint(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.llm_base_url == "http://qwen3-4b.ml-serving.svc.cluster.local/v1"
+
+    def test_llm_base_url_from_env(self) -> None:
+        with patch.dict(
+            os.environ, {**_CLEAN_ENV, "LLM_BASE_URL": "http://vllm:8080/v1"}, clear=True
+        ):
+            config = TriageAgentConfig()
+        assert config.llm_base_url == "http://vllm:8080/v1"
 
 
 class TestGetConfigSingleton:

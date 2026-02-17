@@ -96,6 +96,9 @@ services:
       - PROMETHEUS_URL=http://prometheus:9090
       - LOKI_URL=http://loki:3100
       - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://qwen3-4b.ml-serving.svc.cluster.local/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
       - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
       - LANGSMITH_PROJECT=5g-triage-agent-dev
     depends_on:

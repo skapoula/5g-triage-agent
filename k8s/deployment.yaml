@@ -21,6 +21,10 @@ spec:
             secretKeyRef:
               name: llm-credentials
               key: api-key
+        - name: LLM_PROVIDER
+          value: "openai"          # Override: openai | anthropic | local
+        - name: LLM_BASE_URL
+          value: "http://qwen3-4b.ml-serving.svc.cluster.local/v1"
         resources:
           requests:
             cpu: 1
