@@ -20,16 +20,6 @@ import pytest
 from triage_agent.memgraph.connection import MemgraphConnection
 
 
-def pytest_addoption(parser):
-    """Add Memgraph URL option to pytest."""
-    parser.addoption(
-        "--memgraph-url",
-        action="store",
-        default="bolt://localhost:7687",
-        help="Memgraph Bolt URL for integration tests",
-    )
-
-
 @pytest.fixture(scope="module")
 def memgraph_url(request) -> str:
     """Get Memgraph URL from pytest options."""
