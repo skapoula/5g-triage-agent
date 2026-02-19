@@ -18,6 +18,10 @@ Examples:
 import argparse
 import os
 
+# Import lazily inside main() to ensure LLM_PROVIDER env var is set first.
+# get_config() is an lru_cache singleton; importing config here is safe because
+# we read .server_host / .server_port before the cache is populated.
+
 
 def main() -> None:
     """Parse CLI args and start the uvicorn webhook server."""
@@ -34,15 +38,17 @@ def main() -> None:
             "openai=ChatGPT, anthropic=Claude, local=vLLM/Ollama in-cluster pod."
         ),
     )
+    from triage_agent.config import get_config as _get_config  # noqa: PLC0415
+    _defaults = _get_config()
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
+        default=_defaults.server_host,
         help="Host to bind the webhook server to",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
+        default=_defaults.server_port,
         help="Port to bind the webhook server to",
     )
     parser.add_argument(

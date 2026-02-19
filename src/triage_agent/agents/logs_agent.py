@@ -232,7 +232,7 @@ async def _fetch_loki_logs_direct(
                         "query": query,
                         "start": start * 1_000_000_000,
                         "end": end * 1_000_000_000,
-                        "limit": 1000,
+                        "limit": config.loki_query_limit,
                     },
                 )
                 response.raise_for_status()
@@ -263,11 +263,12 @@ def logs_agent(state: TriageState) -> TriageState:
     if dag is None:
         state["logs"] = {}
         return state
+    cfg = get_config()
     alert_time = parse_timestamp(state["alert"]["startsAt"])
-    start = int(alert_time - 300)
-    end = int(alert_time + 60)
+    start = int(alert_time - cfg.alert_lookback_seconds)
+    end = int(alert_time + cfg.alert_lookahead_seconds)
 
-    queries = build_loki_queries(dag, get_config().core_namespace)
+    queries = build_loki_queries(dag, cfg.core_namespace)
 
     logs_raw: list[dict[str, Any]] = []
     if queries:

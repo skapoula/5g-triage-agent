@@ -97,10 +97,10 @@ class TestRCAPromptTemplate:
             )
 
     def test_template_mentions_layer_determination(self) -> None:
-        """Template should include infra_score thresholds for layer decision."""
-        assert "0.80" in RCA_PROMPT_TEMPLATE
-        assert "0.60" in RCA_PROMPT_TEMPLATE
-        assert "0.30" in RCA_PROMPT_TEMPLATE
+        """Template should include infra_score threshold placeholders for layer decision."""
+        assert "{infra_root_cause_threshold}" in RCA_PROMPT_TEMPLATE
+        assert "{infra_triggered_threshold}" in RCA_PROMPT_TEMPLATE
+        assert "{app_only_threshold}" in RCA_PROMPT_TEMPLATE
 
     def test_template_requests_json_output(self) -> None:
         """Template should request JSON output format."""
@@ -123,6 +123,9 @@ class TestRCAPromptTemplate:
             logs_formatted="No logs available.",
             trace_deviations_formatted="No UE trace deviations available.",
             evidence_quality_score=0.10,
+            infra_root_cause_threshold=0.80,
+            infra_triggered_threshold=0.60,
+            app_only_threshold=0.30,
         )
         assert "Registration_General" in prompt
         assert "0.15" in prompt
@@ -219,14 +222,15 @@ class TestRcaAgentFirstAttempt:
     def test_confidence_threshold_adjusts_with_evidence_quality(self) -> None:
         """High evidence quality (>=0.80) should lower confidence threshold to 0.65."""
         # This documents the decision logic in rca_agent_first_attempt:
-        # min_confidence = 0.70 by default
-        # if evidence_quality_score >= 0.80: min_confidence = 0.65
+        # min_confidence = cfg.min_confidence_default (0.70) by default
+        # if evidence_quality_score >= cfg.high_evidence_threshold (0.80):
+        #     min_confidence = cfg.min_confidence_relaxed (0.65)
         import inspect
 
         source = inspect.getsource(rca_agent_first_attempt)
-        assert "0.70" in source
-        assert "0.65" in source
-        assert "0.80" in source
+        assert "min_confidence_default" in source
+        assert "min_confidence_relaxed" in source
+        assert "high_evidence_threshold" in source
 
 
 class TestRCAOutputStructure:

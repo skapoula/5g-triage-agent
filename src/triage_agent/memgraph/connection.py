@@ -13,28 +13,35 @@ from triage_agent.config import get_config
 class MemgraphConnection:
     """Memgraph connection with pooling and retry logic."""
 
-    def __init__(self, uri: str, max_connection_pool_size: int = 10) -> None:
+    def __init__(
+        self,
+        uri: str,
+        max_connection_pool_size: int = 10,
+        max_retries: int = 3,
+    ) -> None:
         self._driver = GraphDatabase.driver(
             uri,
             max_connection_pool_size=max_connection_pool_size,
         )
+        self._max_retries = max_retries
 
     def execute_cypher(
         self,
         query: str,
         params: dict[str, Any] | None = None,
-        max_retries: int = 3,
+        max_retries: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a read-only Cypher query with retry logic."""
+        retries = max_retries if max_retries is not None else self._max_retries
         last_error: Exception | None = None
-        for attempt in range(max_retries):
+        for attempt in range(retries):
             try:
                 with self._driver.session() as session:
                     result = session.run(query, params or {})
                     return [dict(record) for record in result]
             except (ServiceUnavailable, TransientError) as e:
                 last_error = e
-                if attempt < max_retries - 1:
+                if attempt < retries - 1:
                     time.sleep(2**attempt)  # Exponential backoff
 
         if last_error:
@@ -169,4 +176,8 @@ class MemgraphConnection:
 def get_memgraph() -> MemgraphConnection:
     """Get singleton Memgraph connection."""
     config = get_config()
-    return MemgraphConnection(config.memgraph_uri)
+    return MemgraphConnection(
+        config.memgraph_uri,
+        max_connection_pool_size=config.memgraph_pool_size,
+        max_retries=config.memgraph_max_retries,
+    )

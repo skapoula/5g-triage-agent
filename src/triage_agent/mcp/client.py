@@ -48,16 +48,17 @@ class MCPClient:
         self,
         query: str,
         time: int | None = None,
-        max_retries: int = 3,
+        max_retries: int | None = None,
     ) -> dict[str, Any]:
         """Execute instant PromQL query."""
+        retries = max_retries if max_retries is not None else get_config().prometheus_max_retries
         client = await self._get_client()
         params: dict[str, str | int] = {"query": query}
         if time:
             params["time"] = time
 
         last_error: Exception | None = None
-        for attempt in range(max_retries):
+        for attempt in range(retries):
             try:
                 logger.debug(f"Prometheus query: {query}")
                 response = await client.get(
@@ -73,7 +74,7 @@ class MCPClient:
             except httpx.TimeoutException as e:
                 raise MCPTimeoutError(f"Prometheus query timed out: {query}") from e
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429 and attempt < max_retries - 1:
+                if e.response.status_code == 429 and attempt < retries - 1:
                     await asyncio.sleep(2**attempt)
                     last_error = e
                     continue
@@ -81,22 +82,23 @@ class MCPClient:
 
         if last_error:
             raise MCPQueryError(f"Max retries exceeded for query: {query}") from last_error
-        raise MCPQueryError(f"Max retries exceeded for query: {query}")
+        raise MCPQueryError(f"Max retries exceeded for query: {query}")  # pragma: no cover
 
     async def query_prometheus_range(
         self,
         query: str,
         start: int,
         end: int,
-        step: str = "15s",
+        step: str | None = None,
     ) -> dict[str, Any]:
         """Execute range PromQL query."""
+        effective_step = step if step is not None else get_config().promql_range_step
         client = await self._get_client()
         params: dict[str, str | int] = {
             "query": query,
             "start": start,
             "end": end,
-            "step": step,
+            "step": effective_step,
         }
 
         try:
@@ -121,15 +123,16 @@ class MCPClient:
         logql: str,
         start: int,
         end: int,
-        limit: int = 1000,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute LogQL query."""
+        effective_limit = limit if limit is not None else get_config().loki_query_limit
         client = await self._get_client()
         params: dict[str, str | int] = {
             "query": logql,
             "start": start * 1_000_000_000,  # Convert to nanoseconds
             "end": end * 1_000_000_000,
-            "limit": limit,
+            "limit": effective_limit,
         }
 
         try:

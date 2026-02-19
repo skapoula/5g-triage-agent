@@ -11,20 +11,23 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from triage_agent.config import get_config
 from triage_agent.graph import create_workflow, get_initial_state
 
 logger = logging.getLogger(__name__)
 
+_cfg = get_config()
+
 app = FastAPI(
     title="5G TriageAgent",
     description="Multi-Agent RCA System for 5G Core Network Failures",
-    version="3.2.0",
+    version=_cfg.app_version,
 )
 
-# CORS middleware for development
+# CORS middleware — restrict allow_origins in production via CORS_ALLOW_ORIGINS env var.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cfg.cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -181,7 +184,7 @@ async def root() -> dict[str, Any]:
     """Root endpoint with API info."""
     return {
         "name": "5G TriageAgent",
-        "version": "3.2.0",
+        "version": get_config().app_version,
         "docs": "/docs",
         "health": "/health",
         "webhook": "/webhook",

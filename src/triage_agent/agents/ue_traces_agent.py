@@ -31,9 +31,6 @@ from triage_agent.state import TriageState
 
 logger = logging.getLogger(__name__)
 
-# IMSI pattern: case-insensitive "imsi-" followed by exactly 15 digits
-_IMSI_PATTERN = re.compile(r"(?i)imsi-(\d{15})")
-
 
 def parse_timestamp(ts: str) -> float:
     """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
@@ -54,16 +51,18 @@ def extract_nf_from_pod_name(pod: str) -> str:
 
 
 def extract_unique_imsis(logs: list[dict[str, Any]]) -> list[str]:
-    """Scan log messages for IMSI pattern 'imsi-<15 digits>'.
+    """Scan log messages for IMSI pattern 'imsi-<N digits>' (N from config).
 
     Returns deduplicated list of IMSI digit strings (no 'imsi-' prefix).
     Preserves discovery order.
     """
+    digit_length = get_config().imsi_digit_length
+    pattern = re.compile(rf"(?i)imsi-(\d{{{digit_length}}})")
     seen: set[str] = set()
     result: list[str] = []
     for entry in logs:
         message = entry.get("message", "")
-        for match in _IMSI_PATTERN.finditer(message):
+        for match in pattern.finditer(message):
             imsi = match.group(1)
             if imsi not in seen:
                 seen.add(imsi)
@@ -72,8 +71,9 @@ def extract_unique_imsis(logs: list[dict[str, Any]]) -> list[str]:
 
 
 def per_imsi_logql(imsi: str) -> str:
-    """Build LogQL query for a specific IMSI in the 5g-core namespace."""
-    return f'{{k8s_namespace_name="5g-core"}} |~ "{imsi}"'
+    """Build LogQL query for a specific IMSI in the configured core namespace."""
+    ns = get_config().core_namespace
+    return f'{{k8s_namespace_name="{ns}"}} |~ "{imsi}"'
 
 
 def contract_imsi_trace(
@@ -168,7 +168,7 @@ async def _fetch_loki_logs_direct(
                     "query": query,
                     "start": start * 1_000_000_000,
                     "end": end * 1_000_000_000,
-                    "limit": 1000,
+                    "limit": config.loki_query_limit,
                 },
             )
             response.raise_for_status()
@@ -290,21 +290,29 @@ def discover_and_trace_imsis(state: TriageState) -> TriageState:
       2. Per-IMSI trace construction (wider window for full procedure)
       3. Memgraph ingestion + deviation detection against reference DAG
     """
+    cfg = get_config()
     alert_time = int(parse_timestamp(state["alert"]["startsAt"]))
 
-    # 1. Discovery query — find all active IMSIs in alarm window
-    discovery_logql = '{k8s_namespace_name="5g-core"} |~ "(?i)imsi-"'
+    # 1. Discovery query — find all active IMSIs in alarm window.
+    # Uses core_namespace from config (fixes hardcoded "5g-core" bug).
+    discovery_logql = (
+        f'{{k8s_namespace_name="{cfg.core_namespace}"}} |~ "(?i)imsi-"'
+    )
     discovery_logs = loki_query(
-        discovery_logql, start=alert_time - 30, end=alert_time + 30
+        discovery_logql,
+        start=alert_time - cfg.imsi_discovery_window_seconds,
+        end=alert_time + cfg.imsi_discovery_window_seconds,
     )
     imsis = extract_unique_imsis(discovery_logs)
 
-    # 2. Per-IMSI trace construction (wider window: -2min to +60s)
+    # 2. Per-IMSI trace construction (wider window: lookback + lookahead)
     traces: list[dict[str, Any]] = []
     for imsi in imsis:
         logql = per_imsi_logql(imsi)
         raw_trace = loki_query(
-            logql, start=alert_time - 120, end=alert_time + 60
+            logql,
+            start=alert_time - cfg.imsi_trace_lookback_seconds,
+            end=alert_time + cfg.alert_lookahead_seconds,
         )
         contracted = contract_imsi_trace(raw_trace, imsi)
         traces.append(contracted)

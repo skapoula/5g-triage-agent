@@ -79,9 +79,9 @@ EVIDENCE QUALITY: {evidence_quality_score}
 
 ANALYSIS FRAMEWORK:
 1. Layer Determination:
-   - If infra_score >= 0.80: Likely infrastructure root cause
-   - If infra_score >= 0.60: Possible infrastructure-triggered application failure
-   - If infra_score < 0.30: Likely pure application failure
+   - If infra_score >= {infra_root_cause_threshold}: Likely infrastructure root cause
+   - If infra_score >= {infra_triggered_threshold}: Possible infrastructure-triggered application failure
+   - If infra_score < {app_only_threshold}: Likely pure application failure
 
 2. Root Cause Identification:
    - Use temporal precedence (earliest anomaly in time window)
@@ -173,11 +173,12 @@ def create_llm(
         ImportError: If provider == "anthropic" and langchain-anthropic is not installed
         ValueError: If provider == "local" and base_url is empty, or unknown provider
     """
+    temperature = get_config().llm_temperature
     if provider == "openai":
         return ChatOpenAI(
             model=model,
             api_key=SecretStr(api_key) if api_key else None,
-            temperature=0.1,
+            temperature=temperature,
             timeout=timeout,
         )
     elif provider == "anthropic":
@@ -191,7 +192,7 @@ def create_llm(
         return ChatAnthropic(  # type: ignore[return-value]
             model=model,
             api_key=SecretStr(api_key) if api_key else None,  # type: ignore[arg-type]
-            temperature=0.1,
+            temperature=temperature,
             timeout=timeout,
         )
     elif provider == "local":
@@ -205,7 +206,7 @@ def create_llm(
             model=model,
             api_key=SecretStr(api_key) if api_key else SecretStr("local"),
             base_url=base_url,
-            temperature=0.1,
+            temperature=temperature,
             timeout=timeout,
         )
     else:
@@ -326,16 +327,17 @@ def identify_evidence_gaps(state: TriageState) -> list[str]:
     if not state.get("trace_deviations") or state.get("trace_deviations") == []:
         gaps.append("UE trace analysis needed")
 
+    cfg = get_config()
     # Check evidence quality
-    if state.get("evidence_quality_score", 0.0) < 0.50:
+    if state.get("evidence_quality_score", 0.0) < cfg.evidence_gap_quality_threshold:
         gaps.append("Overall evidence quality too low")
 
     # Check infrastructure findings
-    if state.get("infra_score", 0.0) > 0.60 and not state.get("infra_findings"):
+    if state.get("infra_score", 0.0) > cfg.infra_triggered_threshold and not state.get("infra_findings"):
         gaps.append("Detailed infrastructure findings needed")
 
     # If no specific gaps identified but confidence is low
-    if not gaps and state.get("confidence", 0.0) < 0.70:
+    if not gaps and state.get("confidence", 0.0) < cfg.evidence_gap_confidence_threshold:
         gaps.append("Additional temporal analysis needed")
         gaps.append("Cross-correlation of events needed")
 
@@ -353,32 +355,33 @@ def degraded_mode_analysis(state: TriageState) -> dict[str, Any]:
     Returns:
         Analysis dict with lower confidence scores
     """
+    cfg = get_config()
     # Heuristic: High infra_score -> infrastructure layer
     infra_score = state.get("infra_score", 0.0)
 
-    if infra_score >= 0.80:
+    if infra_score >= cfg.infra_root_cause_threshold:
         # Infrastructure root cause
         root_nf = "pod-level"
         failure_mode = "infrastructure_issue"
         layer = "infrastructure"
-        confidence = 0.50  # Lower confidence for degraded mode
+        confidence = cfg.degraded_conf_infra_generic
 
         # Try to extract specifics from infra_findings
         infra_findings = state.get("infra_findings")
         if infra_findings and isinstance(infra_findings, dict):
             if "OOMKilled" in str(infra_findings):
                 failure_mode = "OOMKilled"
-                confidence = 0.60
+                confidence = cfg.degraded_conf_infra_specific
             elif "CrashLoop" in str(infra_findings):
                 failure_mode = "CrashLoopBackOff"
-                confidence = 0.60
+                confidence = cfg.degraded_conf_infra_specific
 
     else:
         # Application layer - try to extract from logs
         layer = "application"
         root_nf = "unknown"
         failure_mode = "undetermined"
-        confidence = 0.40
+        confidence = cfg.degraded_conf_app_unknown
 
         logs = state.get("logs")
         if logs and isinstance(logs, dict):
@@ -390,12 +393,12 @@ def degraded_mode_analysis(state: TriageState) -> dict[str, Any]:
                         if "timeout" in message:
                             root_nf = nf_name
                             failure_mode = "timeout"
-                            confidence = 0.50
+                            confidence = cfg.degraded_conf_app_pattern_match
                             break
                         elif "auth" in message and "fail" in message:
                             root_nf = nf_name
                             failure_mode = "authentication_failure"
-                            confidence = 0.50
+                            confidence = cfg.degraded_conf_app_pattern_match
                             break
                 if root_nf != "unknown":
                     break
@@ -423,6 +426,7 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
     Returns:
         Updated state with RCA results
     """
+    _cfg = get_config()
     prompt = RCA_PROMPT_TEMPLATE.format(
         procedure_name=state.get("procedure_name", "unknown"),
         infra_score=state.get("infra_score", 0.0),
@@ -435,6 +439,9 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
             state.get("trace_deviations")
         ),
         evidence_quality_score=state.get("evidence_quality_score", 0.0),
+        infra_root_cause_threshold=_cfg.infra_root_cause_threshold,
+        infra_triggered_threshold=_cfg.infra_triggered_threshold,
+        app_only_threshold=_cfg.app_only_threshold,
     )
 
     # Try LLM analysis with timeout handling
@@ -458,9 +465,10 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
     state["layer"] = analysis.get("layer", "application")
 
     # Decision logic: determine if more evidence is needed
-    min_confidence = 0.70
-    if state.get("evidence_quality_score", 0.0) >= 0.80:
-        min_confidence = 0.65
+    cfg = get_config()
+    min_confidence = cfg.min_confidence_default
+    if state.get("evidence_quality_score", 0.0) >= cfg.high_evidence_threshold:
+        min_confidence = cfg.min_confidence_relaxed
 
     if state["confidence"] >= min_confidence:
         state["needs_more_evidence"] = False

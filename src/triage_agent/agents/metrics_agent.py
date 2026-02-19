@@ -11,6 +11,7 @@ from typing import Any
 
 from langsmith import traceable
 
+from triage_agent.config import get_config
 from triage_agent.mcp.client import MCPClient, MCPQueryError, MCPTimeoutError
 from triage_agent.state import TriageState
 
@@ -85,13 +86,17 @@ def build_nf_queries(nfs: list[str]) -> list[str]:
     Returns:
         List of PromQL query strings (4 per NF).
     """
+    cfg = get_config()
+    ew = cfg.promql_error_rate_window
+    cw = cfg.promql_cpu_rate_window_nf
+    q = cfg.promql_latency_quantile
     queries: list[str] = []
     for nf in nfs:
         nf_lower = nf.lower()
         queries.extend([
-            f'rate(http_requests_total{{nf="{nf_lower}",status=~"5.."}}[1m])',
-            f'histogram_quantile(0.95, http_request_duration_seconds{{nf="{nf_lower}"}})',
-            f'rate(container_cpu_usage_seconds_total{{pod=~".*{nf_lower}.*"}}[5m])',
+            f'rate(http_requests_total{{nf="{nf_lower}",status=~"5.."}}[{ew}])',
+            f'histogram_quantile({q}, http_request_duration_seconds{{nf="{nf_lower}"}})',
+            f'rate(container_cpu_usage_seconds_total{{pod=~".*{nf_lower}.*"}}[{cw}])',
             f'container_memory_working_set_bytes{{pod=~".*{nf_lower}.*"}}',
         ])
     return queries

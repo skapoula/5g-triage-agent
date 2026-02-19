@@ -15,18 +15,80 @@ from triage_agent.config import TriageAgentConfig, get_config
 # Keys that BaseSettings might read from the environment.
 # We clear these so host-level env vars don't leak into default-value tests.
 _CONFIG_ENV_KEYS = [
+    # infra_config
     "MEMGRAPH_HOST",
     "MEMGRAPH_PORT",
+    "MEMGRAPH_POOL_SIZE",
+    "MEMGRAPH_MAX_RETRIES",
+    "KNOWN_NFS",
+    "CORE_NAMESPACE",
+    # api_config
     "PROMETHEUS_URL",
     "LOKI_URL",
     "MCP_TIMEOUT",
+    "PROMETHEUS_MAX_RETRIES",
+    "CORS_ALLOW_ORIGINS",
+    "SERVER_HOST",
+    "SERVER_PORT",
+    # model_config
     "LLM_API_KEY",
     "LLM_MODEL",
     "LLM_TIMEOUT",
     "LLM_PROVIDER",
     "LLM_BASE_URL",
+    "LLM_TEMPERATURE",
+    # agent_config
+    "MAX_ATTEMPTS",
+    "MIN_CONFIDENCE_DEFAULT",
+    "MIN_CONFIDENCE_RELAXED",
+    "HIGH_EVIDENCE_THRESHOLD",
+    "ALERT_LOOKBACK_SECONDS",
+    "ALERT_LOOKAHEAD_SECONDS",
+    "IMSI_DISCOVERY_WINDOW_SECONDS",
+    "IMSI_TRACE_LOOKBACK_SECONDS",
+    "IMSI_DIGIT_LENGTH",
+    # query_config
+    "PROMQL_RESTART_WINDOW",
+    "PROMQL_OOM_WINDOW",
+    "PROMQL_CPU_RATE_WINDOW_INFRA",
+    "PROMQL_ERROR_RATE_WINDOW",
+    "PROMQL_LATENCY_QUANTILE",
+    "PROMQL_CPU_RATE_WINDOW_NF",
+    "PROMQL_RANGE_STEP",
+    "LOKI_QUERY_LIMIT",
+    # scoring_config
+    "INFRA_WEIGHT_RESTARTS",
+    "INFRA_WEIGHT_OOM",
+    "INFRA_WEIGHT_POD_STATUS",
+    "INFRA_WEIGHT_RESOURCES",
+    "RESTART_THRESHOLD_CRITICAL",
+    "RESTART_THRESHOLD_HIGH",
+    "RESTART_FACTOR_HIGH",
+    "RESTART_FACTOR_LOW",
+    "MEMORY_SATURATION_PCT",
+    "CPU_SATURATION_CORES",
+    "CPU_SATURATION_FACTOR",
+    "POD_PENDING_FACTOR",
+    "INFRA_ROOT_CAUSE_THRESHOLD",
+    "INFRA_TRIGGERED_THRESHOLD",
+    "APP_ONLY_THRESHOLD",
+    "DEGRADED_CONF_INFRA_GENERIC",
+    "DEGRADED_CONF_INFRA_SPECIFIC",
+    "DEGRADED_CONF_APP_UNKNOWN",
+    "DEGRADED_CONF_APP_PATTERN_MATCH",
+    "EVIDENCE_GAP_QUALITY_THRESHOLD",
+    "EVIDENCE_GAP_CONFIDENCE_THRESHOLD",
+    "EQ_SCORE_ALL_SOURCES",
+    "EQ_SCORE_TRACES_PLUS_ONE",
+    "EQ_SCORE_METRICS_LOGS",
+    "EQ_SCORE_TRACES_ONLY",
+    "EQ_SCORE_METRICS_ONLY",
+    "EQ_SCORE_LOGS_ONLY",
+    "EQ_SCORE_NO_EVIDENCE",
+    # observability_config
     "LANGSMITH_PROJECT",
     "LANGSMITH_API_KEY",
+    "APP_VERSION",
 ]
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if k not in _CONFIG_ENV_KEYS}
@@ -315,3 +377,193 @@ class TestGetConfigSingleton:
         assert first is not second
         assert first.llm_api_key == "key-1"
         assert second.llm_api_key == "key-2"
+
+
+class TestNewModelConfigFields:
+    """Tests for newly added model_config fields."""
+
+    def test_llm_temperature_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.llm_temperature == 0.1
+
+    def test_llm_temperature_from_env(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "LLM_TEMPERATURE": "0.3"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.llm_temperature == 0.3
+
+
+class TestNewAgentConfigFields:
+    """Tests for newly added agent_config fields."""
+
+    def test_max_attempts_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.max_attempts == 2
+
+    def test_max_attempts_from_env(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "MAX_ATTEMPTS": "3"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.max_attempts == 3
+
+    def test_alert_window_defaults(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.alert_lookback_seconds == 300
+        assert config.alert_lookahead_seconds == 60
+
+    def test_imsi_windows_defaults(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.imsi_discovery_window_seconds == 30
+        assert config.imsi_trace_lookback_seconds == 120
+        assert config.imsi_digit_length == 15
+
+    def test_confidence_gate_defaults(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.min_confidence_default == 0.70
+        assert config.min_confidence_relaxed == 0.65
+        assert config.high_evidence_threshold == 0.80
+
+
+class TestNewScoringConfigFields:
+    """Tests for newly added scoring_config fields."""
+
+    def test_infra_weight_defaults_sum_to_one(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        total = (
+            config.infra_weight_restarts
+            + config.infra_weight_oom
+            + config.infra_weight_pod_status
+            + config.infra_weight_resources
+        )
+        assert abs(total - 1.0) < 1e-9
+
+    def test_restart_thresholds_ordered(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.restart_threshold_high < config.restart_threshold_critical
+
+    def test_evidence_quality_scores_defaults(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.eq_score_all_sources == 0.95
+        assert config.eq_score_metrics_logs == 0.80
+        assert config.eq_score_no_evidence == 0.10
+
+    def test_rca_thresholds_defaults(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.infra_root_cause_threshold == 0.80
+        assert config.infra_triggered_threshold == 0.60
+        assert config.app_only_threshold == 0.30
+
+    def test_scoring_fields_overridable_via_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**_CLEAN_ENV, "INFRA_WEIGHT_RESTARTS": "0.50", "INFRA_WEIGHT_OOM": "0.10",
+             "INFRA_WEIGHT_POD_STATUS": "0.20", "INFRA_WEIGHT_RESOURCES": "0.20"},
+            clear=True,
+        ):
+            config = TriageAgentConfig()
+        assert config.infra_weight_restarts == 0.50
+        assert config.infra_weight_oom == 0.10
+
+
+class TestNewQueryConfigFields:
+    """Tests for newly added query_config fields."""
+
+    def test_promql_window_defaults(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.promql_restart_window == "1h"
+        assert config.promql_oom_window == "5m"
+        assert config.promql_cpu_rate_window_infra == "2m"
+        assert config.promql_error_rate_window == "1m"
+        assert config.promql_cpu_rate_window_nf == "5m"
+        assert config.promql_range_step == "15s"
+        assert config.loki_query_limit == 1000
+
+    def test_loki_query_limit_from_env(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "LOKI_QUERY_LIMIT": "5000"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.loki_query_limit == 5000
+
+
+class TestNewInfraConfigFields:
+    """Tests for newly added infra_config fields."""
+
+    def test_memgraph_pool_size_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.memgraph_pool_size == 10
+
+    def test_memgraph_max_retries_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.memgraph_max_retries == 3
+
+    def test_known_nfs_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert "amf" in config.known_nfs
+        assert "smf" in config.known_nfs
+        assert len(config.known_nfs) == 9
+
+    def test_known_nfs_from_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**_CLEAN_ENV, 'KNOWN_NFS': '["amf","smf","custom-nf"]'},
+            clear=True,
+        ):
+            config = TriageAgentConfig()
+        assert config.known_nfs == ["amf", "smf", "custom-nf"]
+
+
+class TestNewApiConfigFields:
+    """Tests for newly added api_config fields."""
+
+    def test_prometheus_max_retries_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.prometheus_max_retries == 3
+
+    def test_cors_allow_origins_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.cors_allow_origins == ["*"]
+
+    def test_cors_allow_origins_from_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**_CLEAN_ENV, 'CORS_ALLOW_ORIGINS': '["http://alertmanager:9093"]'},
+            clear=True,
+        ):
+            config = TriageAgentConfig()
+        assert config.cors_allow_origins == ["http://alertmanager:9093"]
+
+    def test_server_host_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.server_host == "0.0.0.0"
+
+    def test_server_port_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.server_port == 8000
+
+
+class TestObservabilityConfig:
+    """Tests for observability_config fields."""
+
+    def test_app_version_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.app_version == "3.2.0"
+
+    def test_app_version_from_env(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "APP_VERSION": "4.0.0"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.app_version == "4.0.0"

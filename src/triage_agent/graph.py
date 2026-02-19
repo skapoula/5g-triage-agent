@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from langgraph.graph import END, START, StateGraph
 
+from triage_agent.config import get_config
 from triage_agent.state import TriageState
 
 
@@ -22,7 +23,7 @@ def should_retry(state: TriageState) -> Literal["retry", "finalize"]:
     """Determine if RCA should retry with more evidence."""
     needs_more = state.get("needs_more_evidence", False)
     attempt_count = state.get("attempt_count", 1)
-    max_attempts = state.get("max_attempts", 2)
+    max_attempts = state.get("max_attempts", get_config().max_attempts)
 
     if needs_more and attempt_count < max_attempts:
         return "retry"
@@ -146,7 +147,7 @@ def get_initial_state(alert: dict[str, Any], incident_id: str) -> TriageState:
         degraded_mode=False,
         degraded_reason=None,
         attempt_count=1,
-        max_attempts=2,
+        max_attempts=get_config().max_attempts,
         needs_more_evidence=False,
         second_attempt_complete=False,
         final_report=None,
