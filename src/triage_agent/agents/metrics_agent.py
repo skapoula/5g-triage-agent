@@ -134,7 +134,9 @@ async def _fetch_prometheus_metrics(
 def metrics_agent(state: TriageState) -> TriageState:
     """NfMetricsAgent entry point. Pure MCP query, no LLM."""
     dag = state["dag"]
-    assert dag is not None, "metrics_agent requires DAG in state"
+    if dag is None:
+        state["metrics"] = {}
+        return state
     alert_time = parse_timestamp(state["alert"]["startsAt"])
 
     queries = build_nf_queries(dag["all_nfs"])

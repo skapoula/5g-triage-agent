@@ -188,6 +188,54 @@ class TestWebhookEndpoint:
         response = client.post("/webhook", json={"bad": "data"})
         assert response.status_code == 422
 
+    def test_schedules_background_task_for_firing_alert(
+        self, client: TestClient, alertmanager_payload: dict[str, Any]
+    ) -> None:
+        """Firing alert should schedule _run_triage as a background task."""
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            mock_triage.return_value = None
+            response = client.post("/webhook", json=alertmanager_payload)
+        assert response.status_code == 200
+        mock_triage.assert_called_once()
+
+    def test_background_task_receives_alert_dict_and_incident_id(
+        self, client: TestClient, alertmanager_payload: dict[str, Any]
+    ) -> None:
+        """Background task should receive the first firing alert dict and incident_id."""
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            mock_triage.return_value = None
+            response = client.post("/webhook", json=alertmanager_payload)
+        assert response.status_code == 200
+        args, kwargs = mock_triage.call_args
+        # First positional arg is the alert dict
+        alert_dict = args[0]
+        incident_id = args[1]
+        assert isinstance(alert_dict, dict)
+        assert alert_dict["status"] == "firing"
+        assert isinstance(incident_id, str)
+
+    def test_response_returned_without_waiting_for_workflow(
+        self, client: TestClient, alertmanager_payload: dict[str, Any]
+    ) -> None:
+        """Webhook should return accepted status immediately; workflow runs in background."""
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            mock_triage.return_value = None
+            response = client.post("/webhook", json=alertmanager_payload)
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert "incident_id" in data
+
+    def test_background_task_not_scheduled_for_resolved_alerts(
+        self, client: TestClient, sample_alert: dict[str, Any]
+    ) -> None:
+        """No background task should be scheduled when all alerts are resolved."""
+        resolved_alert = {**sample_alert, "status": "resolved"}
+        payload = {"status": "resolved", "alerts": [resolved_alert]}
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            response = client.post("/webhook", json=payload)
+        assert response.json()["status"] == "skipped"
+        mock_triage.assert_not_called()
+
 
 class TestAlertModels:
     """Tests for Pydantic alert models."""

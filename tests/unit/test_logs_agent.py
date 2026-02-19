@@ -792,15 +792,25 @@ class TestLogsAgentFunction:
         assert result["metrics"] is None
         assert result["infra_checked"] is False
 
-    def test_asserts_on_none_dag(
+    def test_none_dag_returns_empty_logs(
         self,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should raise AssertionError if dag is None."""
+        """Should return empty logs dict when dag is None (graceful early return)."""
         state = sample_initial_state
         state["dag"] = None
-        with pytest.raises(AssertionError, match="logs_agent requires DAG"):
-            logs_agent(state)
+        result = logs_agent(state)
+        assert result["logs"] == {}
+
+    def test_none_dag_does_not_raise(
+        self,
+        sample_initial_state: TriageState,
+    ) -> None:
+        """Should not raise any exception when dag is None."""
+        state = sample_initial_state
+        state["dag"] = None
+        result = logs_agent(state)
+        assert isinstance(result, dict)
 
     def test_preserves_alert_in_state(
         self,

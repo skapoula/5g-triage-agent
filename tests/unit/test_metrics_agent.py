@@ -536,15 +536,25 @@ class TestMetricsAgentFunction:
         result = metrics_agent(state)
         assert result["incident_id"] == "test-incident-001"
 
-    def test_asserts_on_none_dag(
+    def test_none_dag_returns_empty_metrics(
         self,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should raise AssertionError if dag is None."""
+        """Should return empty metrics dict when dag is None (graceful early return)."""
         state = sample_initial_state
         state["dag"] = None
-        with pytest.raises(AssertionError, match="metrics_agent requires DAG"):
-            metrics_agent(state)
+        result = metrics_agent(state)
+        assert result["metrics"] == {}
+
+    def test_none_dag_does_not_raise(
+        self,
+        sample_initial_state: TriageState,
+    ) -> None:
+        """Should not raise any exception when dag is None."""
+        state = sample_initial_state
+        state["dag"] = None
+        result = metrics_agent(state)
+        assert isinstance(result, dict)
 
     def test_metrics_is_dict_not_list(
         self,

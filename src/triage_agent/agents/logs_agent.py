@@ -260,7 +260,9 @@ def logs_agent(state: TriageState) -> TriageState:
       3. If unreachable → direct Loki HTTP path for all queries.
     """
     dag = state["dag"]
-    assert dag is not None, "logs_agent requires DAG in state"
+    if dag is None:
+        state["logs"] = {}
+        return state
     alert_time = parse_timestamp(state["alert"]["startsAt"])
     start = int(alert_time - 300)
     end = int(alert_time + 60)

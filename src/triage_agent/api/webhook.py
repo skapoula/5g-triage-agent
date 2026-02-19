@@ -1,14 +1,17 @@
 """FastAPI webhook endpoint for Alertmanager."""
 # ruff: noqa: N815 — camelCase field names match Alertmanager webhook JSON schema
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from triage_agent.graph import create_workflow, get_initial_state
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Compile the workflow once at startup rather than per request
+_workflow = create_workflow()
+
+
+async def _run_triage(alert_dict: dict[str, Any], incident_id: str) -> None:
+    """Run the LangGraph triage workflow in a background thread.
+
+    Uses asyncio.to_thread to avoid nested event loop conflicts since the
+    agent functions call asyncio.run() internally.
+    """
+    try:
+        initial_state = get_initial_state(alert=alert_dict, incident_id=incident_id)
+        result = await asyncio.to_thread(_workflow.invoke, initial_state)
+        logger.info(
+            f"Triage complete: incident_id={incident_id}, "
+            f"report={result.get('final_report')}"
+        )
+    except Exception:
+        logger.exception(f"Triage failed: incident_id={incident_id}")
 
 
 class AlertLabel(BaseModel):
@@ -119,7 +142,9 @@ async def health_check() -> HealthResponse:
 
 
 @app.post("/webhook", response_model=TriageResponse)
-async def receive_alert(payload: AlertmanagerPayload) -> TriageResponse:
+async def receive_alert(
+    payload: AlertmanagerPayload, background_tasks: BackgroundTasks
+) -> TriageResponse:
     """Receive alerts from Alertmanager and trigger triage workflow."""
     incident_id = str(uuid.uuid4())
 
@@ -141,16 +166,7 @@ async def receive_alert(payload: AlertmanagerPayload) -> TriageResponse:
             alerts_received=len(payload.alerts),
         )
 
-    # TODO: Execute LangGraph workflow asynchronously
-    # For now, just acknowledge receipt
-    #
-    # from triage_agent.graph import create_workflow, get_initial_state
-    # workflow = create_workflow()
-    # initial_state = get_initial_state(
-    #     alert=firing_alerts[0].model_dump(),
-    #     incident_id=incident_id,
-    # )
-    # result = await workflow.ainvoke(initial_state)
+    background_tasks.add_task(_run_triage, firing_alerts[0].model_dump(), incident_id)
 
     return TriageResponse(
         incident_id=incident_id,
