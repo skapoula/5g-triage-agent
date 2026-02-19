@@ -1,9 +1,12 @@
 """Evidence quality scoring after data collection agents complete."""
 
+from langsmith import traceable
+
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
 
 
+@traceable(name="EvidenceQuality")
 def compute_evidence_quality(state: TriageState) -> TriageState:
     """Score evidence diversity. Runs after NfMetrics/NfLogs/UeTraces agents."""
     cfg = get_config()
