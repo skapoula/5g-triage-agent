@@ -23,7 +23,6 @@ from triage_agent.agents.metrics_agent import (
 )
 from triage_agent.state import TriageState
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

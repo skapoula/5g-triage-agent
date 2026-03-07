@@ -25,7 +25,6 @@ from triage_agent.agents.ue_traces_agent import (
 )
 from triage_agent.state import TriageState
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

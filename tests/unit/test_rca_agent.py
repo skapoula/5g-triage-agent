@@ -4,8 +4,6 @@ import json
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from triage_agent.agents.rca_agent import (
     RCA_PROMPT_TEMPLATE,
     format_logs_for_prompt,

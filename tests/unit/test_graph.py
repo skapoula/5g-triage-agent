@@ -1,6 +1,5 @@
 """Tests for LangGraph workflow definition."""
 
-from typing import Any
 
 import pytest
 

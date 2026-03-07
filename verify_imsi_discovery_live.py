@@ -31,7 +31,6 @@ from triage_agent.agents.ue_traces_agent import (
 from triage_agent.config import get_config
 from triage_agent.mcp.client import MCPClient
 
-
 # ---------------------------------------------------------------------------
 # Step 1: connectivity
 # ---------------------------------------------------------------------------
@@ -98,7 +97,7 @@ def run_imsi_discovery(now: int, lookback: int) -> tuple[list[str], list[dict]]:
     end = now
 
     logql = f'{{k8s_namespace_name="{cfg.core_namespace}"}} |~ "(?i)imsi-"'
-    print(f"\n2. Running IMSI discovery query...")
+    print("\n2. Running IMSI discovery query...")
     print(f"   Namespace : {cfg.core_namespace}")
     print(f"   Window    : {lookback}s  ({datetime.fromtimestamp(start, UTC).isoformat()} → now)")
     print(f"   LogQL     : {logql}")

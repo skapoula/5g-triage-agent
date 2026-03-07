@@ -23,7 +23,6 @@ from triage_agent.agents.infra_agent import (
 )
 from triage_agent.state import TriageState
 
-
 # ---------------------------------------------------------------------------
 # Fixtures (local to this module)
 # ---------------------------------------------------------------------------

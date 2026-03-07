@@ -132,7 +132,7 @@ def verify_metrics_agent_integration() -> bool:
         print("   ✗ state['metrics'] is not a dict")
         return False
 
-    print(f"   ✓ metrics_agent completed successfully")
+    print("   ✓ metrics_agent completed successfully")
     print(f"   ✓ state['metrics'] is a dict with {len(result['metrics'])} NF(s)")
 
     # Show collected metrics

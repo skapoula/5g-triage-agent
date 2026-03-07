@@ -4,7 +4,7 @@ Rule-based (no LLM). Queries Prometheus via MCP for pod-level health,
 computes an infrastructure score, and forwards findings to RCAAgent.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langsmith import traceable
@@ -236,7 +236,7 @@ def extract_critical_events(metrics: dict[str, Any]) -> list[dict[str, object]]:
 def parse_timestamp(ts: str) -> float:
     """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return dt.replace(tzinfo=timezone.utc if dt.tzinfo is None else dt.tzinfo).timestamp()
+    return dt.replace(tzinfo=UTC if dt.tzinfo is None else dt.tzinfo).timestamp()
 
 
 def extract_nfs_from_alert(alert: dict[str, Any]) -> list[str]:
@@ -265,7 +265,7 @@ def extract_nfs_from_alert(alert: dict[str, Any]) -> list[str]:
 
 
 @traceable(name="InfraAgent")
-def infra_agent(state: TriageState) -> TriageState:
+def infra_agent(state: TriageState) -> dict[str, Any]:
     """InfraAgent entry point. Rule-based, no LLM."""
     cfg = get_config()
     alert = state["alert"]
@@ -284,16 +284,17 @@ def infra_agent(state: TriageState) -> TriageState:
 
     infra_score = compute_infrastructure_score(metrics)
 
-    # Always forward findings to RCAAgent (no early exit)
-    state["infra_checked"] = True
-    state["infra_score"] = infra_score
-    state["infra_findings"] = {
-        "pod_restarts": extract_restart_counts(metrics),
-        "oom_kills": extract_oom_events(metrics),
-        "resource_usage": extract_resource_metrics(metrics),
-        "node_health": extract_node_status(metrics),
-        "concurrent_failures": count_concurrent_failures(metrics),
-        "critical_events": extract_critical_events(metrics),
+    # Return only the keys this agent writes — avoids LangGraph parallel-merge conflict
+    # with metrics_agent (both start from START in the same step).
+    return {
+        "infra_checked": True,
+        "infra_score": infra_score,
+        "infra_findings": {
+            "pod_restarts": extract_restart_counts(metrics),
+            "oom_kills": extract_oom_events(metrics),
+            "resource_usage": extract_resource_metrics(metrics),
+            "node_health": extract_node_status(metrics),
+            "concurrent_failures": count_concurrent_failures(metrics),
+            "critical_events": extract_critical_events(metrics),
+        },
     }
-
-    return state

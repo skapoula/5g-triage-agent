@@ -323,9 +323,8 @@ class TestLLMProviderConfig:
         assert config.llm_provider == "local"
 
     def test_llm_provider_invalid_raises(self) -> None:
-        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
-            with pytest.raises(ValueError):
-                TriageAgentConfig(llm_api_key="key", llm_provider="grok")  # type: ignore[arg-type]
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True), pytest.raises(ValueError):
+            TriageAgentConfig(llm_api_key="key", llm_provider="grok")  # type: ignore[arg-type]
 
     def test_llm_base_url_defaults_to_cluster_endpoint(self) -> None:
         with patch.dict(os.environ, _CLEAN_ENV, clear=True):
