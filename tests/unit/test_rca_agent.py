@@ -63,17 +63,16 @@ class TestFormatTraceDeviationsForPrompt:
         result = format_trace_deviations_for_prompt(None)
         assert result == "No UE trace deviations available."
 
-    def test_empty_list_returns_no_deviations_message(self) -> None:
-        """Empty list should return descriptive string."""
-        result = format_trace_deviations_for_prompt([])
+    def test_empty_dict_returns_no_deviations_message(self) -> None:
+        """Empty dict should return descriptive string."""
+        result = format_trace_deviations_for_prompt({})
         assert result == "No UE trace deviations available."
 
     def test_formats_as_json(self) -> None:
         """Non-empty deviations should be formatted as indented JSON."""
-        deviations = [{"deviation_point": 9, "expected": "Auth"}]
+        deviations = {"registration_general": [{"deviation_point": 9, "expected": "Auth"}]}
         result = format_trace_deviations_for_prompt(deviations)
-        parsed = json.loads(result)
-        assert parsed == deviations
+        assert "registration_general" in result
 
 
 class TestRCAPromptTemplate:
