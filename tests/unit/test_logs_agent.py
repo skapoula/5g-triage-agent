@@ -756,98 +756,70 @@ class TestLogsAgentFunction:
 
     def _run_logs_agent(
         self, state: TriageState, dag: dict[str, Any]
-    ) -> TriageState:
+    ) -> dict[str, Any]:
         """Run logs_agent with health check → False and direct → [] (no real I/O)."""
-        state["dag"] = dag
+        state["dags"] = [dag]
         with _patch_health_check(False), _patch_direct_fetch(return_value=[]):
             return logs_agent(state)
 
-    def test_sets_logs_in_state(
+    def test_sets_logs_in_result(
         self,
         sample_initial_state: TriageState,
         logs_dag: dict[str, Any],
     ) -> None:
-        """logs_agent must populate state['logs']."""
+        """logs_agent must return a delta dict with 'logs' key."""
         result = self._run_logs_agent(sample_initial_state, logs_dag)
         assert result["logs"] is not None
         assert isinstance(result["logs"], dict)
 
-    def test_returns_triage_state(
+    def test_returns_delta_dict(
         self,
         sample_initial_state: TriageState,
         logs_dag: dict[str, Any],
     ) -> None:
+        """logs_agent returns only {'logs': ...}, not full state."""
         result = self._run_logs_agent(sample_initial_state, logs_dag)
         assert isinstance(result, dict)
-        assert "alert" in result
+        assert set(result.keys()) == {"logs"}
 
-    def test_does_not_modify_other_fields(
-        self,
-        sample_initial_state: TriageState,
-        logs_dag: dict[str, Any],
-    ) -> None:
-        """Should not touch fields owned by other agents."""
-        result = self._run_logs_agent(sample_initial_state, logs_dag)
-        assert result["root_nf"] is None
-        assert result["metrics"] is None
-        assert result["infra_checked"] is False
-
-    def test_none_dag_returns_empty_logs(
+    def test_empty_dags_returns_empty_logs(
         self,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should return empty logs dict when dag is None (graceful early return)."""
+        """Should return {'logs': {}} when dags is empty list."""
         state = sample_initial_state
-        state["dag"] = None
+        state["dags"] = []
         result = logs_agent(state)
-        assert result["logs"] == {}
+        assert result == {"logs": {}}
 
-    def test_none_dag_does_not_raise(
+    def test_none_dags_does_not_raise(
         self,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should not raise any exception when dag is None."""
+        """Should not raise any exception when dags is None."""
         state = sample_initial_state
-        state["dag"] = None
+        state["dags"] = None
         result = logs_agent(state)
         assert isinstance(result, dict)
-
-    def test_preserves_alert_in_state(
-        self,
-        sample_initial_state: TriageState,
-        logs_dag: dict[str, Any],
-    ) -> None:
-        """Alert payload should pass through unchanged."""
-        original_alert = sample_initial_state["alert"].copy()
-        result = self._run_logs_agent(sample_initial_state, logs_dag)
-        assert result["alert"] == original_alert
-
-    def test_preserves_incident_id(
-        self,
-        sample_initial_state: TriageState,
-        logs_dag: dict[str, Any],
-    ) -> None:
-        result = self._run_logs_agent(sample_initial_state, logs_dag)
-        assert result["incident_id"] == "test-incident-001"
 
     def test_logs_is_dict_not_list(
         self,
         sample_initial_state: TriageState,
         logs_dag: dict[str, Any],
     ) -> None:
-        """state['logs'] must be a dict keyed by NF name, not a flat list."""
+        """result['logs'] must be a dict keyed by NF name, not a flat list."""
         result = self._run_logs_agent(sample_initial_state, logs_dag)
         assert isinstance(result["logs"], dict)
         assert not isinstance(result["logs"], list)
 
-    def test_mcp_path_updates_state_logs(
+    def test_mcp_path_updates_logs(
         self,
         sample_initial_state: TriageState,
         logs_dag: dict[str, Any],
     ) -> None:
-        """state['logs'] should be populated correctly via MCP path (not just direct)."""
+        """result['logs'] should be populated correctly via MCP path."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         mcp_logs = [
             {
                 "pod": "amf-deployment-abc",
@@ -881,7 +853,7 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """MCP available but queries fail → empty logs (no fallback to direct)."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(True), \
              _patch_mcp_fetch(side_effect=MCPTimeoutError("Loki query timed out")):
             result = logs_agent(state)
@@ -895,7 +867,7 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """MCP unavailable and direct queries fail → empty logs."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(False), \
              _patch_direct_fetch(side_effect=ConnectionError("direct refused")):
             result = logs_agent(state)
@@ -909,7 +881,7 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """Agent must not propagate MCP query exceptions to the caller."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(True), \
              _patch_mcp_fetch(side_effect=RuntimeError("unexpected")):
             result = logs_agent(state)
@@ -922,27 +894,25 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """Agent must not propagate direct-Loki exceptions to the caller."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(False), \
              _patch_direct_fetch(side_effect=RuntimeError("unexpected")):
             result = logs_agent(state)
             assert isinstance(result, dict)
 
-    def test_failure_preserves_other_state_fields(
+    def test_failure_returns_empty_logs(
         self,
         sample_initial_state: TriageState,
         logs_dag: dict[str, Any],
     ) -> None:
-        """Query failure should not corrupt other state fields."""
+        """Query failure should return {'logs': {}} delta dict."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(True), \
              _patch_mcp_fetch(side_effect=MCPTimeoutError("timeout")):
             result = logs_agent(state)
-        assert result["root_nf"] is None
-        assert result["metrics"] is None
-        assert result["infra_checked"] is False
-        assert result["incident_id"] == "test-incident-001"
+        assert "logs" in result
+        assert isinstance(result["logs"], dict)
 
     def test_direct_path_loki_timeout_returns_empty_logs(
         self,
@@ -951,7 +921,7 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """Direct path: Loki timeout should produce empty logs, not raise."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(False), \
              _patch_direct_fetch(side_effect=TimeoutError("Loki direct timed out")):
             result = logs_agent(state)
@@ -965,7 +935,7 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """Agent must not propagate direct-path TimeoutError to the caller."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(False), \
              _patch_direct_fetch(side_effect=TimeoutError("Loki timed out")):
             result = logs_agent(state)
@@ -978,13 +948,12 @@ class TestLogsAgentGracefulDegradation:
     ) -> None:
         """MCP Loki timeout should set logs to empty dict without corrupting state."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(True), \
              _patch_mcp_fetch(side_effect=MCPTimeoutError("Loki query timed out")):
             result = logs_agent(state)
         assert result["logs"] is not None
-        assert result["alert"] == state["alert"]
-        assert result["incident_id"] == "test-incident-001"
+        assert "logs" in result
 
 
 # ===========================================================================
@@ -1005,7 +974,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Health check True → MCP fetch path is called."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         mcp_logs = [
             {
                 "pod": "amf-deployment-abc",
@@ -1027,7 +996,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Health check True → direct path is NOT called."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(True), \
              _patch_mcp_fetch(return_value=[]), \
              _patch_direct_fetch(return_value=[]) as mock_direct:
@@ -1041,7 +1010,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Health check False → direct Loki path is called."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         direct_logs = [
             {
                 "pod": "amf-deployment-abc",
@@ -1063,7 +1032,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Health check False → MCP fetch is NOT called."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(False), \
              _patch_mcp_fetch(return_value=[]) as mock_mcp, \
              _patch_direct_fetch(return_value=[]):
@@ -1077,7 +1046,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Logs from MCP path should be annotated with DAG phases."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         mcp_logs = [
             {
                 "pod": "amf-deployment-abc",
@@ -1099,7 +1068,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Logs from direct path should be annotated with DAG phases."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         direct_logs = [
             {
                 "pod": "amf-deployment-abc",
@@ -1121,7 +1090,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """If health check itself raises, default to direct Loki path."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         direct_logs = [
             {
                 "pod": "ausf-deployment-def",
@@ -1142,7 +1111,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Direct path should handle logs from multiple NFs."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         direct_logs = [
             {
                 "pod": "amf-deployment-abc",
@@ -1171,7 +1140,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """MCP fetch should receive start=alert_time-300, end=alert_time+60."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(True), \
              _patch_mcp_fetch(return_value=[]) as mock_fetch:
             logs_agent(state)
@@ -1187,7 +1156,7 @@ class TestLogsAgentPathSelection:
     ) -> None:
         """Direct Loki fetch should receive start=alert_time-300, end=alert_time+60."""
         state = sample_initial_state
-        state["dag"] = logs_dag
+        state["dags"] = [logs_dag]
         with _patch_health_check(False), \
              _patch_direct_fetch(return_value=[]) as mock_fetch:
             logs_agent(state)
@@ -1195,3 +1164,58 @@ class TestLogsAgentPathSelection:
         alert_time = int(parse_timestamp(state["alert"]["startsAt"]))
         assert kwargs["start"] == alert_time - 300
         assert kwargs["end"] == alert_time + 60
+
+
+# ===========================================================================
+# Multi-DAG and delta return tests
+# ===========================================================================
+
+
+class TestLogsAgentMultiDag:
+    """Tests for logs_agent multi-dag phases and delta return."""
+
+    def test_logs_agent_returns_delta_dict_not_full_state(
+        self, sample_initial_state: TriageState, sample_dags: list[dict]
+    ) -> None:
+        """logs_agent must return only {'logs': ...}, not the full TriageState."""
+        state = sample_initial_state
+        state["dags"] = sample_dags
+        state["nf_union"] = sample_dags[0]["all_nfs"]
+
+        with patch("triage_agent.agents.logs_agent.asyncio.run", return_value=[]):
+            result = logs_agent(state)
+
+        assert set(result.keys()) == {"logs"}
+
+    def test_logs_agent_builds_queries_from_all_dags_phases(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """build_loki_queries_from_dags unions phases from all matched DAGs."""
+        from triage_agent.agents.logs_agent import build_loki_queries_from_dags
+
+        dags = [
+            {
+                "all_nfs": ["AMF"],
+                "phases": [{"actors": ["AMF"], "success_log": "ok", "failure_patterns": ["*fail*"]}],
+            },
+            {
+                "all_nfs": ["SMF"],
+                "phases": [{"actors": ["SMF"], "success_log": "done", "failure_patterns": ["*error*"]}],
+            },
+        ]
+        queries = build_loki_queries_from_dags(dags, "5g-core")
+
+        all_queries = " ".join(queries)
+        assert "amf" in all_queries
+        assert "smf" in all_queries
+
+    def test_logs_agent_empty_dags_returns_empty_logs(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """logs_agent with empty dags returns {'logs': {}}."""
+        state = sample_initial_state
+        state["dags"] = []
+
+        result = logs_agent(state)
+
+        assert result == {"logs": {}}

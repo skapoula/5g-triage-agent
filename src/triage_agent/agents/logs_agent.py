@@ -65,7 +65,7 @@ def build_loki_queries(dag: dict[str, Any], core_namespace: str) -> list[str]:
 
         # Phase-specific pattern queries
         for phase in dag["phases"]:
-            if nf in phase["actors"]:
+            if nf in phase.get("actors", []):
                 queries.append(
                     f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "{phase["success_log"]}"'
                 )
@@ -247,11 +247,29 @@ async def _fetch_loki_logs_direct(
     return results
 
 
+def build_loki_queries_from_dags(
+    dags: list[dict[str, Any]], core_namespace: str
+) -> list[str]:
+    """Build LogQL queries from the union of NFs and phases across all matched DAGs."""
+    all_nfs: list[str] = []
+    seen_nfs: set[str] = set()
+    all_phases: list[dict[str, Any]] = []
+    for dag in dags:
+        for nf in dag.get("all_nfs", []):
+            if nf not in seen_nfs:
+                seen_nfs.add(nf)
+                all_nfs.append(nf)
+        all_phases.extend(dag.get("phases", []))
+
+    combined = {"all_nfs": all_nfs, "phases": all_phases}
+    return build_loki_queries(combined, core_namespace)
+
+
 # --- Agent entry point ---
 
 
 @traceable(name="NfLogsAgent")
-def logs_agent(state: TriageState) -> TriageState:
+def logs_agent(state: TriageState) -> dict[str, Any]:
     """NfLogsAgent entry point. Pure MCP/HTTP query, no LLM.
 
     Two-path architecture:
@@ -259,16 +277,15 @@ def logs_agent(state: TriageState) -> TriageState:
       2. If reachable → MCP path for all queries.
       3. If unreachable → direct Loki HTTP path for all queries.
     """
-    dag = state["dag"]
-    if dag is None:
-        state["logs"] = {}
-        return state
+    dags = state.get("dags") or []
+    if not dags:
+        return {"logs": {}}
     cfg = get_config()
     alert_time = parse_timestamp(state["alert"]["startsAt"])
     start = int(alert_time - cfg.alert_lookback_seconds)
     end = int(alert_time + cfg.alert_lookahead_seconds)
 
-    queries = build_loki_queries(dag, cfg.core_namespace)
+    queries = build_loki_queries_from_dags(dags, cfg.core_namespace)
 
     logs_raw: list[dict[str, Any]] = []
     if queries:
@@ -306,5 +323,9 @@ def logs_agent(state: TriageState) -> TriageState:
                     exc_info=True,
                 )
 
-    state["logs"] = organize_and_annotate_logs(logs_raw, dag)
-    return state
+    # Build combined dag for annotation (union of all phases)
+    combined_dag: dict[str, Any] = {
+        "all_nfs": [],
+        "phases": [p for dag in dags for p in dag.get("phases", [])],
+    }
+    return {"logs": organize_and_annotate_logs(logs_raw, combined_dag)}
