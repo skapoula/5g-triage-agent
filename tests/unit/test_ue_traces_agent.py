@@ -639,4 +639,4 @@ class TestDiscoverAndTraceImsisDeltaReturn:
 
         assert result["discovered_imsis"] == []
         assert result["traces_ready"] is False
-        assert result["trace_deviations"] == {}
+        assert result["trace_deviations"] is None

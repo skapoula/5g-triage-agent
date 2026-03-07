@@ -144,7 +144,7 @@ def format_logs_for_prompt(logs: dict[str, Any] | None) -> str:
     return json.dumps(logs, indent=2)
 
 
-def format_trace_deviations_for_prompt(deviations: list[dict[str, Any]] | None) -> str:
+def format_trace_deviations_for_prompt(deviations: dict[str, list[dict[str, Any]]] | None) -> str:
     if not deviations:
         return "No UE trace deviations available."
     return json.dumps(deviations, indent=2)
@@ -324,7 +324,7 @@ def identify_evidence_gaps(state: TriageState) -> list[str]:
     if not state.get("logs") or state.get("logs") == {}:
         gaps.append("NF logs data needed")
 
-    if not state.get("trace_deviations") or state.get("trace_deviations") == []:
+    if not state.get("trace_deviations"):
         gaps.append("UE trace analysis needed")
 
     cfg = get_config()

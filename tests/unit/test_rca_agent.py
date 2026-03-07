@@ -1,6 +1,7 @@
 """Tests for RCAAgent - the only agent that uses an LLM."""
 
 import json
+import uuid
 from typing import Any
 from unittest.mock import patch
 
@@ -9,8 +10,10 @@ from triage_agent.agents.rca_agent import (
     format_logs_for_prompt,
     format_metrics_for_prompt,
     format_trace_deviations_for_prompt,
+    identify_evidence_gaps,
     rca_agent_first_attempt,
 )
+from triage_agent.graph import get_initial_state
 from triage_agent.state import TriageState
 
 
@@ -621,3 +624,30 @@ class TestStateUpdates:
 
             # Should default to "application" if layer is missing
             assert result["layer"] == "application"
+
+
+def test_format_trace_deviations_dict() -> None:
+    deviations = {
+        "registration_general": [{"deviation_point": 3, "expected": "AMF sends NAS", "actual": "timeout"}],
+        "authentication_5g_aka": [],
+    }
+    result = format_trace_deviations_for_prompt(deviations)
+    assert "registration_general" in result
+    assert "deviation_point" in result
+
+
+def test_format_trace_deviations_none() -> None:
+    assert format_trace_deviations_for_prompt(None) == "No UE trace deviations available."
+
+
+def test_format_trace_deviations_empty_dict() -> None:
+    assert format_trace_deviations_for_prompt({}) == "No UE trace deviations available."
+
+
+def test_identify_evidence_gaps_empty_trace_deviations() -> None:
+    """trace_deviations being {} (empty dict) should count as missing evidence."""
+    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
+    state = get_initial_state(alert, str(uuid.uuid4()))
+    state["trace_deviations"] = {}
+    gaps = identify_evidence_gaps(state)
+    assert "UE trace analysis needed" in gaps

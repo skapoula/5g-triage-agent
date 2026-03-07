@@ -277,7 +277,7 @@ def discover_and_trace_imsis(state: TriageState) -> dict[str, Any]:
     """
     dags = state.get("dags") or []
     if not dags:
-        return {"discovered_imsis": [], "traces_ready": False, "trace_deviations": {}}
+        return {"discovered_imsis": [], "traces_ready": False, "trace_deviations": None}
 
     cfg = get_config()
     alert_time = int(parse_timestamp(state["alert"]["startsAt"]))

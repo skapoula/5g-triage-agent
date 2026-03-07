@@ -25,7 +25,7 @@ class TriageState(TypedDict):
     logs: dict | None  # {nf_name: [log_entries]}
     discovered_imsis: list[str] | None  # IMSIs active in alarm window
     traces_ready: bool  # True when IMSI traces ingested into Memgraph
-    trace_deviations: list[dict] | None  # Per-IMSI deviation results from Memgraph comparison
+    trace_deviations: dict[str, list[dict]] | None  # {dag_name: [deviation_dicts]} from Memgraph comparison
     incident_id: str  # Unique investigation identifier
     evidence_quality_score: float
 
