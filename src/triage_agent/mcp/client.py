@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from triage_agent.config import get_config
-from triage_agent.utils import extract_log_level
+from triage_agent.utils import parse_loki_response
 
 logger = logging.getLogger(__name__)
 
@@ -145,21 +145,7 @@ class MCPClient:
             response.raise_for_status()
             data = response.json()
 
-            # Parse Loki response format
-            logs: list[dict[str, Any]] = []
-            for stream in data.get("data", {}).get("result", []):
-                labels = stream.get("stream", {})
-                for value in stream.get("values", []):
-                    logs.append(
-                        {
-                            "timestamp": int(value[0]) // 1_000_000_000,
-                            "message": value[1],
-                            "labels": labels,
-                            "pod": labels.get("pod", ""),
-                            "level": extract_log_level(value[1]),
-                        }
-                    )
-            return logs
+            return parse_loki_response(data)
         except httpx.TimeoutException as e:
             raise MCPTimeoutError("Loki query timed out") from e
         except httpx.HTTPStatusError as e:
@@ -192,6 +178,6 @@ class MCPClient:
         """Async context manager entry."""
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args: object) -> None:
         """Async context manager exit."""
         await self.close()

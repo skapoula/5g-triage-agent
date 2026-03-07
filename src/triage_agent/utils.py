@@ -7,7 +7,9 @@ from typing import Any
 def parse_timestamp(ts: str) -> float:
     """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return dt.replace(tzinfo=UTC if dt.tzinfo is None else dt.tzinfo).timestamp()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.timestamp()
 
 
 def extract_log_level(message: str) -> str:
