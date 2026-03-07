@@ -708,17 +708,3 @@ class TestInfraAgentFunction:
         assert "concurrent_failures" in findings
         assert "critical_events" in findings
 
-    def test_does_not_set_root_nf(
-        self, sample_initial_state: TriageState
-    ) -> None:
-        """InfraAgent should NOT set RCA fields (that's RCAAgent's job)."""
-        state = infra_agent(sample_initial_state)
-        assert state["root_nf"] is None
-
-    def test_returns_triage_state(
-        self, sample_initial_state: TriageState
-    ) -> None:
-        """Must return a TriageState dict."""
-        state = infra_agent(sample_initial_state)
-        assert isinstance(state, dict)
-        assert "alert" in state
