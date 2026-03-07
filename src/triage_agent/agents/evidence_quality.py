@@ -1,5 +1,7 @@
 """Evidence quality scoring after data collection agents complete."""
 
+from typing import Any
+
 from langsmith import traceable
 
 from triage_agent.config import get_config
@@ -7,7 +9,7 @@ from triage_agent.state import TriageState
 
 
 @traceable(name="EvidenceQuality")
-def compute_evidence_quality(state: TriageState) -> TriageState:
+def compute_evidence_quality(state: TriageState) -> dict[str, Any]:
     """Score evidence diversity. Runs after NfMetrics/NfLogs/UeTraces agents."""
     cfg = get_config()
     available_types = []
@@ -33,5 +35,4 @@ def compute_evidence_quality(state: TriageState) -> TriageState:
     else:
         quality_score = cfg.eq_score_no_evidence       # No evidence
 
-    state["evidence_quality_score"] = min(quality_score, 1.0)
-    return state
+    return {"evidence_quality_score": min(quality_score, 1.0)}

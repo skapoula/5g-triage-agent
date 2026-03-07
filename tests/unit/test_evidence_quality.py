@@ -114,3 +114,16 @@ class TestComputeEvidenceQuality:
 
         # Empty dict is falsy, so treated as no data
         assert result["evidence_quality_score"] == pytest.approx(0.10, abs=0.01)
+
+    def test_returns_only_delta_dict(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """compute_evidence_quality returns only {'evidence_quality_score': float}."""
+        state = sample_initial_state
+        state["metrics"] = {"AMF": []}
+        state["logs"] = None
+        state["traces_ready"] = False
+
+        result = compute_evidence_quality(state)
+
+        assert set(result.keys()) == {"evidence_quality_score"}
