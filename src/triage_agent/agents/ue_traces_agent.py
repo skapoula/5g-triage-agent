@@ -276,25 +276,46 @@ def run_deviation_detection(
     return deviations
 
 
+def run_deviation_detection_for_dag(
+    incident_id: str, dag_name: str
+) -> list[dict[str, Any]]:
+    """Compare ingested traces against a single reference DAG in Memgraph."""
+    conn = get_memgraph()
+    imsi_records = conn.execute_cypher(
+        "MATCH (t:CapturedTrace {incident_id: $incident_id}) RETURN t.imsi AS imsi",
+        {"incident_id": incident_id},
+    )
+    deviations: list[dict[str, Any]] = []
+    for record in imsi_records:
+        imsi = record["imsi"]
+        deviation = conn.detect_deviation(incident_id, imsi, dag_name)
+        if deviation is not None:
+            deviations.append(deviation)
+    return deviations
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
 
 @traceable(name="UeTracesAgent")
-def discover_and_trace_imsis(state: TriageState) -> TriageState:
+def discover_and_trace_imsis(state: TriageState) -> dict[str, Any]:
     """UeTracesAgent entry point. Pure MCP query + Memgraph, no LLM.
 
     Pipeline:
       1. IMSI discovery pass (Loki query in alarm window)
       2. Per-IMSI trace construction (wider window for full procedure)
-      3. Memgraph ingestion + deviation detection against reference DAG
+      3. Memgraph ingestion + per-procedure deviation detection
     """
+    dags = state.get("dags") or []
+    if not dags:
+        return {"discovered_imsis": [], "traces_ready": False, "trace_deviations": {}}
+
     cfg = get_config()
     alert_time = int(parse_timestamp(state["alert"]["startsAt"]))
 
     # 1. Discovery query — find all active IMSIs in alarm window.
-    # Uses core_namespace from config (fixes hardcoded "5g-core" bug).
     discovery_logql = (
         f'{{k8s_namespace_name="{cfg.core_namespace}"}} |~ "(?i)imsi-"'
     )
@@ -314,17 +335,22 @@ def discover_and_trace_imsis(state: TriageState) -> TriageState:
             start=alert_time - cfg.imsi_trace_lookback_seconds,
             end=alert_time + cfg.alert_lookahead_seconds,
         )
-        contracted = contract_imsi_trace(raw_trace, imsi)
-        traces.append(contracted)
+        traces.append(contract_imsi_trace(raw_trace, imsi))
 
-    # 3. Ingest into Memgraph and run deviation detection
+    # 3. Ingest into Memgraph
     ingest_traces_to_memgraph(traces, state["incident_id"])
 
-    dag_name = state.get("procedure_name", "")
-    deviations = run_deviation_detection(state["incident_id"], dag_name)
+    # 4. Per-procedure deviation detection
+    trace_deviations: dict[str, list[dict[str, Any]]] = {}
+    for dag in dags:
+        dag_name = dag.get("name", "")
+        if dag_name:
+            trace_deviations[dag_name] = run_deviation_detection_for_dag(
+                state["incident_id"], dag_name
+            )
 
-    state["discovered_imsis"] = imsis
-    state["traces_ready"] = True
-    state["trace_deviations"] = deviations
-
-    return state
+    return {
+        "discovered_imsis": imsis,
+        "traces_ready": True,
+        "trace_deviations": trace_deviations,
+    }

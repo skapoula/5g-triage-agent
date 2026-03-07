@@ -471,7 +471,7 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph: MagicMock,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should set state['discovered_imsis'] with found IMSIs."""
+        """Should return discovered_imsis with found IMSIs."""
         mock_loki.side_effect = [
             # Discovery pass
             [{"timestamp": 0, "message": "Request from imsi-001010123456789", "pod": "amf-1", "level": "INFO"}],
@@ -484,7 +484,7 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph.return_value = mock_conn
 
         state = sample_initial_state
-        state["procedure_name"] = "Registration_General"
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
         result = discover_and_trace_imsis(state)
 
         assert result["discovered_imsis"] == ["001010123456789"]
@@ -497,14 +497,14 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph: MagicMock,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should set state['traces_ready'] = True after ingestion."""
+        """Should return traces_ready = True after ingestion."""
         mock_loki.return_value = []
         mock_conn = MagicMock()
         mock_conn.execute_cypher.return_value = []
         mock_get_memgraph.return_value = mock_conn
 
         state = sample_initial_state
-        state["procedure_name"] = "Registration_General"
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
         result = discover_and_trace_imsis(state)
 
         assert result["traces_ready"] is True
@@ -518,7 +518,7 @@ class TestDiscoverAndTraceImsis:
         sample_initial_state: TriageState,
         sample_trace_deviation: dict[str, Any],
     ) -> None:
-        """Should set state['trace_deviations'] from deviation detection."""
+        """Should return trace_deviations dict keyed by procedure name."""
         mock_loki.side_effect = [
             [{"timestamp": 0, "message": "imsi-001010123456789", "pod": "amf-1", "level": "INFO"}],
             [{"timestamp": 0, "message": "trace event", "pod": "amf-1", "level": "INFO"}],
@@ -529,11 +529,12 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph.return_value = mock_conn
 
         state = sample_initial_state
-        state["procedure_name"] = "Registration_General"
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
         result = discover_and_trace_imsis(state)
 
-        assert isinstance(result["trace_deviations"], list)
-        assert len(result["trace_deviations"]) >= 1
+        assert isinstance(result["trace_deviations"], dict)
+        assert "registration_general" in result["trace_deviations"]
+        assert len(result["trace_deviations"]["registration_general"]) >= 1
 
     @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
     @patch("triage_agent.agents.ue_traces_agent.loki_query")
@@ -543,7 +544,7 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph: MagicMock,
         sample_initial_state: TriageState,
     ) -> None:
-        """When no IMSIs are found, should set empty lists and still mark ready."""
+        """When no IMSIs are found, empty lists and traces_ready=True."""
         mock_loki.return_value = [
             {"timestamp": 0, "message": "No subscriber info", "pod": "amf-1", "level": "INFO"},
         ]
@@ -552,51 +553,90 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph.return_value = mock_conn
 
         state = sample_initial_state
-        state["procedure_name"] = "Registration_General"
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
         result = discover_and_trace_imsis(state)
 
         assert result["discovered_imsis"] == []
         assert result["traces_ready"] is True
-        assert result["trace_deviations"] == []
+        assert isinstance(result["trace_deviations"], dict)
 
     @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
     @patch("triage_agent.agents.ue_traces_agent.loki_query")
-    def test_does_not_modify_other_fields(
+    def test_returns_delta_dict(
         self,
         mock_loki: MagicMock,
         mock_get_memgraph: MagicMock,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should not touch fields owned by other agents."""
+        """discover_and_trace_imsis returns only delta dict keys."""
         mock_loki.return_value = []
         mock_conn = MagicMock()
         mock_conn.execute_cypher.return_value = []
         mock_get_memgraph.return_value = mock_conn
 
         state = sample_initial_state
-        state["procedure_name"] = "Registration_General"
-        result = discover_and_trace_imsis(state)
-
-        assert result["root_nf"] is None
-        assert result["metrics"] is None
-        assert result["infra_checked"] is False
-
-    @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
-    @patch("triage_agent.agents.ue_traces_agent.loki_query")
-    def test_returns_triage_state(
-        self,
-        mock_loki: MagicMock,
-        mock_get_memgraph: MagicMock,
-        sample_initial_state: TriageState,
-    ) -> None:
-        mock_loki.return_value = []
-        mock_conn = MagicMock()
-        mock_conn.execute_cypher.return_value = []
-        mock_get_memgraph.return_value = mock_conn
-
-        state = sample_initial_state
-        state["procedure_name"] = "Registration_General"
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
         result = discover_and_trace_imsis(state)
 
         assert isinstance(result, dict)
-        assert "alert" in result
+        assert set(result.keys()) == {"discovered_imsis", "traces_ready", "trace_deviations"}
+
+
+# ===========================================================================
+# Multi-procedure deviation and delta return tests
+# ===========================================================================
+
+
+class TestDiscoverAndTraceImsisDeltaReturn:
+    """Tests for delta return and per-procedure deviation detection."""
+
+    def test_discover_and_trace_imsis_returns_delta_dict(
+        self, sample_initial_state: TriageState, mock_memgraph: MagicMock
+    ) -> None:
+        """discover_and_trace_imsis returns delta dict, not full state."""
+        state = sample_initial_state
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
+
+        with (
+            patch("triage_agent.agents.ue_traces_agent.loki_query", return_value=[]),
+            patch("triage_agent.agents.ue_traces_agent.get_memgraph", return_value=mock_memgraph),
+        ):
+            result = discover_and_trace_imsis(state)
+
+        expected_keys = {"discovered_imsis", "traces_ready", "trace_deviations"}
+        assert set(result.keys()) == expected_keys
+
+    def test_deviation_detection_runs_per_procedure(
+        self, sample_initial_state: TriageState, mock_memgraph: MagicMock
+    ) -> None:
+        """trace_deviations is keyed by procedure name, one entry per matched DAG."""
+        state = sample_initial_state
+        state["dags"] = [
+            {"name": "registration_general", "all_nfs": ["AMF"]},
+            {"name": "authentication_5g_aka", "all_nfs": ["AUSF"]},
+        ]
+        mock_memgraph.execute_cypher.return_value = []
+
+        with (
+            patch("triage_agent.agents.ue_traces_agent.loki_query", return_value=[]),
+            patch("triage_agent.agents.ue_traces_agent.get_memgraph", return_value=mock_memgraph),
+        ):
+            result = discover_and_trace_imsis(state)
+
+        deviations = result["trace_deviations"]
+        assert isinstance(deviations, dict)
+        assert "registration_general" in deviations
+        assert "authentication_5g_aka" in deviations
+
+    def test_empty_dags_returns_empty_traces(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """With no DAGs, traces agent returns minimal empty delta dict."""
+        state = sample_initial_state
+        state["dags"] = []
+
+        result = discover_and_trace_imsis(state)
+
+        assert result["discovered_imsis"] == []
+        assert result["traces_ready"] is False
+        assert result["trace_deviations"] == {}
