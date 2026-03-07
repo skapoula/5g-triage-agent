@@ -60,6 +60,7 @@ def create_workflow() -> Any:
         Compiled LangGraph workflow ready for execution.
     """
     # Import agents here to avoid circular imports
+    from triage_agent.agents.dag_mapper import dag_mapper
     from triage_agent.agents.evidence_quality import compute_evidence_quality
     from triage_agent.agents.infra_agent import infra_agent
     from triage_agent.agents.logs_agent import logs_agent
@@ -72,6 +73,7 @@ def create_workflow() -> Any:
 
     # Add all nodes
     workflow.add_node("infra_agent", infra_agent)
+    workflow.add_node("dag_mapper", dag_mapper)
     workflow.add_node("metrics_agent", metrics_agent)
     workflow.add_node("logs_agent", logs_agent)
     workflow.add_node("traces_agent", discover_and_trace_imsis)
@@ -80,16 +82,21 @@ def create_workflow() -> Any:
     workflow.add_node("increment_attempt", increment_attempt)
     workflow.add_node("finalize", finalize_report)
 
-    # Parallel start: InfraAgent and DataCollection run simultaneously
+    # Parallel start: InfraAgent and DagMapper both run from START
     workflow.add_edge(START, "infra_agent")
-    workflow.add_edge(START, "metrics_agent")
+    workflow.add_edge(START, "dag_mapper")
 
-    # Data collection pipeline (sequential within parallel branch)
-    workflow.add_edge("metrics_agent", "logs_agent")
-    workflow.add_edge("logs_agent", "traces_agent")
+    # DagMapper fans out to all three collection agents (parallel)
+    workflow.add_edge("dag_mapper", "metrics_agent")
+    workflow.add_edge("dag_mapper", "logs_agent")
+    workflow.add_edge("dag_mapper", "traces_agent")
+
+    # All three converge at evidence_quality
+    workflow.add_edge("metrics_agent", "evidence_quality")
+    workflow.add_edge("logs_agent", "evidence_quality")
     workflow.add_edge("traces_agent", "evidence_quality")
 
-    # Both branches must complete before RCA
+    # Both branches (infra + evidence) must complete before RCA
     workflow.add_edge("infra_agent", "rca_agent")
     workflow.add_edge("evidence_quality", "rca_agent")
 

@@ -122,13 +122,13 @@ class TestCreateWorkflow:
 
         assert workflow is not None
 
-    def test_parallel_edges_for_infra_agent_and_metrics_agent(self) -> None:
-        """Both infra_agent and metrics_agent have edges from START (parallel execution)."""
+    def test_parallel_edges_from_start(self) -> None:
+        """Both infra_agent and dag_mapper have edges from START (parallel execution)."""
         graph = create_workflow().get_graph()
         edge_pairs = [(e.source, e.target) for e in graph.edges]
 
         assert ("__start__", "infra_agent") in edge_pairs
-        assert ("__start__", "metrics_agent") in edge_pairs
+        assert ("__start__", "dag_mapper") in edge_pairs
 
     def test_conditional_edge_from_rca_agent(self) -> None:
         """rca_agent has conditional edges to both increment_attempt and finalize."""
@@ -137,3 +137,36 @@ class TestCreateWorkflow:
 
         assert "increment_attempt" in rca_targets
         assert "finalize" in rca_targets
+
+    def test_dag_mapper_fans_out_to_all_three_agents(self) -> None:
+        """dag_mapper has edges to metrics_agent, logs_agent, and traces_agent."""
+        graph = create_workflow().get_graph()
+        dag_mapper_targets = {e.target for e in graph.edges if e.source == "dag_mapper"}
+
+        assert "metrics_agent" in dag_mapper_targets
+        assert "logs_agent" in dag_mapper_targets
+        assert "traces_agent" in dag_mapper_targets
+
+    def test_dag_mapper_starts_from_start(self) -> None:
+        """dag_mapper has an edge from __start__."""
+        graph = create_workflow().get_graph()
+        edge_pairs = [(e.source, e.target) for e in graph.edges]
+
+        assert ("__start__", "dag_mapper") in edge_pairs
+
+    def test_all_three_agents_converge_at_evidence_quality(self) -> None:
+        """metrics_agent, logs_agent, and traces_agent all have edges to evidence_quality."""
+        graph = create_workflow().get_graph()
+        edge_pairs = [(e.source, e.target) for e in graph.edges]
+
+        assert ("metrics_agent", "evidence_quality") in edge_pairs
+        assert ("logs_agent", "evidence_quality") in edge_pairs
+        assert ("traces_agent", "evidence_quality") in edge_pairs
+
+    def test_no_sequential_edges_between_collection_agents(self) -> None:
+        """There must be no sequential edges: metrics→logs, logs→traces."""
+        graph = create_workflow().get_graph()
+        edge_pairs = [(e.source, e.target) for e in graph.edges]
+
+        assert ("metrics_agent", "logs_agent") not in edge_pairs
+        assert ("logs_agent", "traces_agent") not in edge_pairs
