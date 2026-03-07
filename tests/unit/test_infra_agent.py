@@ -19,8 +19,8 @@ from triage_agent.agents.infra_agent import (
     extract_resource_metrics,
     extract_restart_counts,
     infra_agent,
-    parse_timestamp,
 )
+from triage_agent.utils import parse_timestamp
 from triage_agent.state import TriageState
 
 # ---------------------------------------------------------------------------

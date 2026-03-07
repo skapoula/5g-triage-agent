@@ -4,13 +4,13 @@ Rule-based (no LLM). Queries Prometheus via MCP for pod-level health,
 computes an infrastructure score, and forwards findings to RCAAgent.
 """
 
-from datetime import UTC, datetime
 from typing import Any
 
 from langsmith import traceable
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
+from triage_agent.utils import parse_timestamp
 
 
 def build_infra_queries(core_namespace: str) -> list[str]:
@@ -231,12 +231,6 @@ def extract_critical_events(metrics: dict[str, Any]) -> list[dict[str, object]]:
             })
 
     return events
-
-
-def parse_timestamp(ts: str) -> float:
-    """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
-    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return dt.replace(tzinfo=UTC if dt.tzinfo is None else dt.tzinfo).timestamp()
 
 
 def extract_nfs_from_alert(alert: dict[str, Any]) -> list[str]:

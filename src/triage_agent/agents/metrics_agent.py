@@ -6,7 +6,6 @@ from the candidate list provided by the DAG.
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from langsmith import traceable
@@ -14,16 +13,9 @@ from langsmith import traceable
 from triage_agent.config import get_config
 from triage_agent.mcp.client import MCPClient, MCPQueryError, MCPTimeoutError
 from triage_agent.state import TriageState
+from triage_agent.utils import parse_timestamp
 
 logger = logging.getLogger(__name__)
-
-
-def parse_timestamp(ts: str) -> float:
-    """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
-    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return dt.replace(
-        tzinfo=UTC if dt.tzinfo is None else dt.tzinfo
-    ).timestamp()
 
 
 def _resolve_nf(

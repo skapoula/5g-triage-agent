@@ -18,7 +18,6 @@ Pipeline:
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -28,16 +27,9 @@ from triage_agent.config import get_config
 from triage_agent.mcp.client import MCPClient
 from triage_agent.memgraph.connection import get_memgraph
 from triage_agent.state import TriageState
+from triage_agent.utils import parse_loki_response, parse_timestamp
 
 logger = logging.getLogger(__name__)
-
-
-def parse_timestamp(ts: str) -> float:
-    """Parse ISO timestamp from alert payload. Returns Unix epoch seconds."""
-    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return dt.replace(
-        tzinfo=UTC if dt.tzinfo is None else dt.tzinfo
-    ).timestamp()
 
 
 def extract_nf_from_pod_name(pod: str) -> str:
@@ -128,31 +120,6 @@ async def _fetch_loki_logs_mcp(
     return logs
 
 
-def _extract_log_level(message: str) -> str:
-    """Extract log level from message text."""
-    message_upper = message.upper()
-    for level in ("FATAL", "ERROR", "WARN", "INFO", "DEBUG"):
-        if level in message_upper:
-            return level
-    return "INFO"
-
-
-def _parse_loki_response(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse Loki query_range JSON response into flat log entry list."""
-    logs: list[dict[str, Any]] = []
-    for stream in data.get("data", {}).get("result", []):
-        labels = stream.get("stream", {})
-        for value in stream.get("values", []):
-            logs.append({
-                "timestamp": int(value[0]) // 1_000_000_000,
-                "message": value[1],
-                "labels": labels,
-                "pod": labels.get("k8s_pod_name", labels.get("pod", "")),
-                "level": _extract_log_level(value[1]),
-            })
-    return logs
-
-
 async def _fetch_loki_logs_direct(
     query: str,
     start: int,
@@ -172,7 +139,7 @@ async def _fetch_loki_logs_direct(
                 },
             )
             response.raise_for_status()
-            return _parse_loki_response(response.json())
+            return parse_loki_response(response.json())
         except httpx.TimeoutException:
             logger.warning("Loki direct query timed out: %s", query)
         except httpx.HTTPStatusError as exc:

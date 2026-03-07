@@ -19,8 +19,8 @@ from triage_agent.agents.metrics_agent import (
     build_nf_queries,
     metrics_agent,
     organize_metrics_by_nf,
-    parse_timestamp,
 )
+from triage_agent.utils import parse_timestamp
 from triage_agent.state import TriageState
 
 # ---------------------------------------------------------------------------

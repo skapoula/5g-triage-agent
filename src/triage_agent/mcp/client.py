@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from triage_agent.config import get_config
+from triage_agent.utils import extract_log_level
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ class MCPClient:
                             "message": value[1],
                             "labels": labels,
                             "pod": labels.get("pod", ""),
-                            "level": self._extract_log_level(value[1]),
+                            "level": extract_log_level(value[1]),
                         }
                     )
             return logs
@@ -163,14 +164,6 @@ class MCPClient:
             raise MCPTimeoutError("Loki query timed out") from e
         except httpx.HTTPStatusError as e:
             raise MCPQueryError(f"Loki HTTP error: {e}") from e
-
-    def _extract_log_level(self, message: str) -> str:
-        """Extract log level from message."""
-        message_upper = message.upper()
-        for level in ["FATAL", "ERROR", "WARN", "INFO", "DEBUG"]:
-            if level in message_upper:
-                return level
-        return "INFO"
 
     async def health_check_prometheus(self) -> bool:
         """Check Prometheus availability."""
