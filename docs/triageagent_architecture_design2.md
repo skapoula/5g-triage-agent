@@ -21,7 +21,7 @@
 5G TriageAgent v3.2 is a multi-agent LangGraph orchestration system for real-time root cause analysis of 5G core network failures. When Prometheus Alertmanager fires an alert (e.g., `registration_failures > 0`), the system coordinates specialized agents through a directed graph workflow to localize failures across infrastructure, network function, and 3GPP procedure layers.
 
 The architecture implements a multi-agent pipeline:
-**InfraAgent** (parallel) â†’ **NfMetricsAgent/NfLogsAgent/UeTracesAgent** (parallel) â†’ **RCAAgent**
+**InfraAgent** (parallel with MetricsAgent) â†’ sequential data chain **NfMetricsAgent â†’ NfLogsAgent â†’ UeTracesAgent â†’ EvidenceQuality** â†’ **RCAAgent**
 , where each agent has a focused responsibility and communicates through a shared state object. 3GPP procedure DAGs are pre-loaded into embedded Memgraph.
 
 | 4 | MCP | Memgraph |
@@ -45,9 +45,11 @@ flowchart TD
     B --> C(["START"])
 
     C --> D["InfraAgent<br/>Check pod metrics via MCP"]
-    C --> E["NfMetricsAgent +<br/>NfLogsAgent +<br/>UeTracesAgent<br/>(parallel)<br/>MCP: Prometheus, Loki"]
+    C --> E["NfMetricsAgent<br/>MCP: Prometheus"]
 
-    E --> F["EvidenceQuality"]
+    E --> E2["NfLogsAgent<br/>MCP: Loki"]
+    E2 --> E3["UeTracesAgent<br/>MCP: Loki"]
+    E3 --> F["EvidenceQuality"]
 
     D --> G
     F --> G
@@ -82,7 +84,7 @@ All agents read/write to a LangGraph state object.
 
 ### 3.1 InfraAgent
 
-**Trigger**: Always runs at START (parallel with data collection agents)
+**Trigger**: Always runs at START (parallel with NfMetricsAgent)
 **LLM Calls**: 0 (rule-based)
 
 **Source**: `src/triage_agent/agents/infra_agent.py`
@@ -100,6 +102,8 @@ Query pod-level metrics for all potentially affected NFs:
 | Pod status | `pod_status` | Running/Pending/Failed |
 
 See `infra_agent.py` â†’ `INFRA_PROMETHEUS_QUERIES` for full PromQL.
+
+> **Note (implementation status)**: The MCP Prometheus query in `infra_agent.py` is currently stubbed (`metrics: dict[str, Any] = {}  # TODO: wire up MCP client` at `infra_agent.py:283`). Until wired, `infra_score` is always `0.0` and `infra_findings` will be empty. The scoring model and output structure are fully implemented.
 
 #### 3.1.2 Infrastructure Score Computation
 
@@ -149,9 +153,9 @@ Auto-generated reference DAGs in Memgraph:
 
 ---
 
-### 3.3 NfMetricsAgent & NfLogsAgent & UeTracesAgent (Parallel Execution)
+### 3.3 NfMetricsAgent, NfLogsAgent & UeTracesAgent (Sequential Data Collection)
 
-All three agents execute in parallel to minimize latency. Each queries MCP servers for their respective data types.
+The three data collection agents execute sequentially: NfMetricsAgent runs first, then NfLogsAgent, then UeTracesAgent, before EvidenceQuality aggregates their results. Each queries MCP servers for their respective data types.
 
 #### 3.3.1 NfMetricsAgent
 
@@ -163,16 +167,21 @@ Pulls per-NF metrics (error rate, p95 latency, CPU, memory) from Prometheus for 
 
 #### 3.3.2 NfLogsAgent
 
-**Trigger**: `state["dag"]` is populated
-**LLM Calls**: 0 (pure MCP query)
+**Trigger**: `state["metrics"]` is populated (runs after NfMetricsAgent)
+**LLM Calls**: 0 (two-path MCP + HTTP fallback)
 **Source**: `src/triage_agent/agents/logs_agent.py`
 
 Pulls ERROR/WARN/FATAL logs from Loki for the candidate NF set. Annotates log entries with matched DAG phase and failure pattern.
 
+**Two-path architecture**:
+1. Health-check MCP server availability (probe `/ready` endpoint).
+2. If reachable → fetch all logs via `MCPClient`.
+3. If unreachable → fetch all logs via direct Loki HTTP API fallback (via `httpx`).
+
 #### 3.3.3 UeTracesAgent
 
-**Trigger**: `state["dag"]` is populated
-**LLM Calls**: 0 (pure MCP query)
+**Trigger**: Runs after NfLogsAgent (sequential chain)
+**LLM Calls**: 0 (two-path MCP + HTTP fallback, mirrors NfLogsAgent)
 **Source**: `src/triage_agent/agents/ue_traces_agent.py`
 **Trace Script**: `scripts/trace_ue_v3.sh`
 
@@ -242,18 +251,17 @@ Minimum confidence threshold: 0.70 (lowered to 0.65 if evidence quality â‰¥ 
 
 ```mermaid
 flowchart TD
-    START(["START"]) --> INFRA & DATA
+    START(["START"]) --> INFRA & M
 
     subgraph left [" "]
-        INFRA["InfraAgent<br/>â€¢ MCP: k8s + Prometheus<br/>â€¢ infra_score<br/>â€¢ infra_findings"]
+        INFRA["InfraAgent<br/>â€¢ MCP: Prometheus<br/>â€¢ infra_score<br/>â€¢ infra_findings"]
     end
 
     subgraph right [" "]
-        DATA["Data Collection (parallel)"]
-        DATA --> M["NfMetricsAgent<br/>â€¢ MCP: Prometheus"]
-        DATA --> L["NfLogsAgent<br/>â€¢ MCP: Loki"]
-        DATA --> U["UeTracesAgent<br/>â€¢ MCP: Loki<br/>â€¢ Memgraph ingest"]
-        M & L & U --> EQ["EvidenceQuality"]
+        M["NfMetricsAgent<br/>â€¢ MCP: Prometheus"]
+        M --> L["NfLogsAgent<br/>â€¢ MCP: Loki"]
+        L --> U["UeTracesAgent<br/>â€¢ MCP: Loki<br/>â€¢ Memgraph ingest"]
+        U --> EQ["EvidenceQuality"]
     end
 
     INFRA --> RCA
@@ -268,7 +276,31 @@ flowchart TD
 </details>
 
 ### 4.2 LangGraph Definition
-TODO: implement during coding phase
+
+**Entry point**: `create_workflow()` in `src/triage_agent/graph.py`. State is initialized via `get_initial_state(alert, incident_id)`.
+
+**Nodes**:
+
+| Node | Function |
+|------|----------|
+| `infra_agent` | `infra_agent` (from `agents/infra_agent.py`) |
+| `metrics_agent` | `metrics_agent` (from `agents/metrics_agent.py`) |
+| `logs_agent` | `logs_agent` (from `agents/logs_agent.py`) |
+| `traces_agent` | `discover_and_trace_imsis` (from `agents/ue_traces_agent.py`) |
+| `evidence_quality` | `compute_evidence_quality` (from `agents/evidence_quality.py`) |
+| `rca_agent` | `rca_agent_first_attempt` (from `agents/rca_agent.py`) |
+| `increment_attempt` | `increment_attempt` (inline, increments `attempt_count`) |
+| `finalize` | `finalize_report` (inline, assembles `final_report`) |
+
+**Edges**:
+
+- `START → infra_agent` (parallel)
+- `START → metrics_agent` (parallel)
+- Sequential data chain: `metrics_agent → logs_agent → traces_agent → evidence_quality`
+- Join at RCA: `infra_agent → rca_agent`, `evidence_quality → rca_agent`
+- Conditional routing: `rca_agent → {retry: increment_attempt | finalize: finalize}` (via `should_retry()`)
+- Retry loop: `increment_attempt → rca_agent`
+- `finalize → END`
 
 ### 4.3 LangSmith Tracing Configuration
 LangSmith provides distributed tracing for observability across the multi-agent workflow.
@@ -324,7 +356,7 @@ Each agent is wrapped with `@traceable` decorator for automatic span creation. L
 
 ### 6.3 Alerting Rules
 
-**Source**: `src/triage_agent/observability/alerting.py`
+> **Note (implementation status)**: `src/triage_agent/observability/alerting.py` is planned but not yet implemented.
 
 ### 6.4 Custom Dashboards
 
@@ -336,9 +368,9 @@ Each agent is wrapped with `@traceable` decorator for automatic span creation. L
 
 ### 6.5 Feedback Loop Integration
 
-**Source**: `src/triage_agent/observability/feedback.py`
+> **Note (implementation status)**: `src/triage_agent/observability/feedback.py` is planned but not yet implemented.
 
-Operators can submit feedback (correct/incorrect/partial) per investigation. Feedback is stored in LangSmith and used for confidence calibration.
+Operators will be able to submit feedback (correct/incorrect/partial) per investigation. Feedback will be stored in LangSmith and used for confidence calibration.
 
 ---
 
@@ -346,11 +378,11 @@ Operators can submit feedback (correct/incorrect/partial) per investigation. Fee
 
 ### 7.1 MCP Servers
 
-| Server | Purpose | Endpoint | Timeout |
-|--------|---------|----------|---------|
-| Prometheus | Metrics queries | `http://prometheus:9090` | 3s |
-| Loki | Log queries | `http://loki:3100` | 3s |
-| Kubernetes API | Pod/node status | `https://kubernetes.default.svc` | 500ms |
+| Server | Purpose | Endpoint | Timeout | Status |
+|--------|---------|----------|---------|--------|
+| Prometheus | Metrics queries | `http://kube-prom-kube-prometheus-prometheus.monitoring:9090` | 3s | Implemented |
+| Loki | Log queries | `http://loki.monitoring:3100` | 3s | Implemented |
+| Kubernetes API | Pod/node status | `https://kubernetes.default.svc` | 500ms | Planned (not yet in `mcp/client.py`) |
 
 ### 7.2 MCP Client Configuration
 

@@ -4,9 +4,11 @@ flowchart TD
     B --> C(["<b>START</b>"])
 
     C --> D["<b>InfraAgent</b><br/><i>Check pod metrics via MCP</i>"]
-    C --> E["<b>NfMetricsAgent</b> +<br/><b>NfLogsAgent</b> +<br/><b>UeTracesAgent</b><br/><i>(parallel)</i><br/><i>MCP: Prometheus, Loki</i>"]
+    C --> E["<b>NfMetricsAgent</b><br/><i>MCP: Prometheus</i>"]
 
-    E --> F["<b>EvidenceQuality</b>"]
+    E --> E2["<b>NfLogsAgent</b><br/><i>MCP: Loki (+ HTTP fallback)</i>"]
+    E2 --> E3["<b>UeTracesAgent</b><br/><i>MCP: Loki</i>"]
+    E3 --> F["<b>EvidenceQuality</b>"]
 
     D --> G
     F --> G
@@ -21,6 +23,8 @@ flowchart TD
     style C fill:#16213e,stroke:#e94560,stroke-width:2px,color:#e0e0e0
     style D fill:#1a1a2e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
     style E fill:#1a1a2e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
+    style E2 fill:#1a1a2e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
+    style E3 fill:#1a1a2e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
     style F fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
     style G fill:#0f3460,stroke:#e94560,stroke-width:2px,color:#e0e0e0
     style H fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
