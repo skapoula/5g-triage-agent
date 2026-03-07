@@ -480,89 +480,66 @@ class TestMetricsAgentFunction:
     def test_sets_metrics_in_state(
         self,
         sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
+        sample_dags: list[dict[str, Any]],
     ) -> None:
         """metrics_agent must populate state['metrics']."""
         state = sample_initial_state
-        state["dag"] = sample_dag
+        state["nf_union"] = sample_dags[0]["all_nfs"]
         result = metrics_agent(state)
         assert result["metrics"] is not None
         assert isinstance(result["metrics"], dict)
 
-    def test_returns_triage_state(
+    def test_returns_delta_dict(
         self,
         sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
+        sample_dags: list[dict[str, Any]],
     ) -> None:
+        """metrics_agent returns a delta dict with 'metrics' key only."""
         state = sample_initial_state
-        state["dag"] = sample_dag
+        state["nf_union"] = sample_dags[0]["all_nfs"]
         result = metrics_agent(state)
         assert isinstance(result, dict)
-        assert "alert" in result
+        assert "metrics" in result
 
-    def test_does_not_modify_other_fields(
+    def test_does_not_include_other_fields(
         self,
         sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
+        sample_dags: list[dict[str, Any]],
     ) -> None:
-        """Should not touch fields owned by other agents."""
+        """Delta dict should only contain 'metrics', not full state keys."""
         state = sample_initial_state
-        state["dag"] = sample_dag
+        state["nf_union"] = sample_dags[0]["all_nfs"]
         result = metrics_agent(state)
-        assert result["root_nf"] is None
-        assert result["logs"] is None
-        assert result["infra_checked"] is False
+        assert set(result.keys()) == {"metrics"}
 
-    def test_preserves_alert_in_state(
-        self,
-        sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
-    ) -> None:
-        """Alert payload should pass through unchanged."""
-        state = sample_initial_state
-        state["dag"] = sample_dag
-        original_alert = state["alert"].copy()
-        result = metrics_agent(state)
-        assert result["alert"] == original_alert
-
-    def test_preserves_incident_id(
-        self,
-        sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
-    ) -> None:
-        state = sample_initial_state
-        state["dag"] = sample_dag
-        result = metrics_agent(state)
-        assert result["incident_id"] == "test-incident-001"
-
-    def test_none_dag_returns_empty_metrics(
+    def test_none_nf_union_returns_empty_metrics(
         self,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should return empty metrics dict when dag is None (graceful early return)."""
+        """Should return empty metrics dict when nf_union is None."""
         state = sample_initial_state
-        state["dag"] = None
+        state["nf_union"] = None
         result = metrics_agent(state)
         assert result["metrics"] == {}
 
-    def test_none_dag_does_not_raise(
+    def test_none_nf_union_does_not_raise(
         self,
         sample_initial_state: TriageState,
     ) -> None:
-        """Should not raise any exception when dag is None."""
+        """Should not raise any exception when nf_union is None."""
         state = sample_initial_state
-        state["dag"] = None
+        state["nf_union"] = None
         result = metrics_agent(state)
         assert isinstance(result, dict)
 
     def test_metrics_is_dict_not_list(
         self,
         sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
+        sample_dags: list[dict[str, Any]],
     ) -> None:
         """state['metrics'] must be a dict keyed by NF name, not a flat list."""
         state = sample_initial_state
-        state["dag"] = sample_dag
+        state["nf_union"] = sample_dags[0]["all_nfs"]
         result = metrics_agent(state)
         assert isinstance(result["metrics"], dict)
         assert not isinstance(result["metrics"], list)
@@ -574,42 +551,35 @@ class TestMetricsAgentFunction:
 
 
 class TestMetricsAgentEmptyNfs:
-    """Tests for metrics_agent when dag['all_nfs'] is empty."""
+    """Tests for metrics_agent when nf_union is empty."""
 
     def test_empty_nfs_produces_empty_metrics(
         self,
         sample_initial_state: TriageState,
-        empty_dag: dict[str, Any],
     ) -> None:
-        """With no NFs in DAG, state['metrics'] should be empty."""
+        """With empty nf_union, state['metrics'] should be empty."""
         state = sample_initial_state
-        state["dag"] = empty_dag
+        state["nf_union"] = []
         result = metrics_agent(state)
-        assert result["metrics"] is not None
-        assert isinstance(result["metrics"], dict)
-        total = sum(len(v) for v in result["metrics"].values())
-        assert total == 0
+        assert result["metrics"] == {}
 
     def test_empty_nfs_no_queries_generated(
         self,
         sample_initial_state: TriageState,
-        empty_dag: dict[str, Any],
     ) -> None:
         """With no NFs, zero Prometheus queries should be built."""
         state = sample_initial_state
-        state["dag"] = empty_dag
-        # Should complete without error
+        state["nf_union"] = []
         result = metrics_agent(state)
         assert result["metrics"] == {}
 
     def test_empty_nfs_does_not_crash(
         self,
         sample_initial_state: TriageState,
-        empty_dag: dict[str, Any],
     ) -> None:
         """Graceful handling — no exception."""
         state = sample_initial_state
-        state["dag"] = empty_dag
+        state["nf_union"] = []
         result = metrics_agent(state)
         assert isinstance(result, dict)
 
@@ -630,43 +600,77 @@ class TestMetricsAgentStateUpdate:
     def test_metrics_value_is_dict_keyed_by_nf(
         self,
         sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
+        sample_dags: list[dict[str, Any]],
     ) -> None:
         state = sample_initial_state
-        state["dag"] = sample_dag
+        state["nf_union"] = sample_dags[0]["all_nfs"]
         result = metrics_agent(state)
         metrics = result["metrics"]
         assert isinstance(metrics, dict)
-        # Keys (if any) should be valid NF names from the DAG
-        valid_nfs = {nf.upper() for nf in sample_dag["all_nfs"]}
+        # Keys (if any) should be valid NF names from the nf_union
+        valid_nfs = {nf.upper() for nf in sample_dags[0]["all_nfs"]}
         for key in metrics:
             assert key.upper() in valid_nfs
 
     def test_metrics_values_are_lists(
         self,
         sample_initial_state: TriageState,
-        sample_dag: dict[str, Any],
+        sample_dags: list[dict[str, Any]],
     ) -> None:
         state = sample_initial_state
-        state["dag"] = sample_dag
+        state["nf_union"] = sample_dags[0]["all_nfs"]
         result = metrics_agent(state)
         for nf_name, entries in result["metrics"].items():
             assert isinstance(entries, list), (
                 f"metrics[{nf_name!r}] should be a list"
             )
 
-    def test_single_nf_dag_metrics_structure(
+    def test_single_nf_union_metrics_structure(
         self,
         sample_initial_state: TriageState,
-        single_nf_dag: dict[str, Any],
     ) -> None:
-        """With a single-NF DAG, metrics should have at most one NF key."""
+        """With a single-NF union, metrics should have at most one NF key."""
         state = sample_initial_state
-        state["dag"] = single_nf_dag
+        state["nf_union"] = ["AMF"]
         result = metrics_agent(state)
         # With stub (empty results), metrics is {}; with real MCP, key would be "AMF"
         for key in result["metrics"]:
             assert key.upper() == "AMF"
+
+
+# ===========================================================================
+# metrics_agent nf_union tests
+# ===========================================================================
+
+
+class TestMetricsAgentNfUnion:
+    """Tests for metrics_agent using nf_union instead of dag."""
+
+    def test_metrics_agent_uses_nf_union_not_dag(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """metrics_agent reads nf_union from state, not state['dag']."""
+        from unittest.mock import patch
+
+        state = sample_initial_state
+        state["nf_union"] = ["AMF", "AUSF"]
+        state["dags"] = None
+
+        with patch("triage_agent.agents.metrics_agent.asyncio.run", return_value=[]):
+            result = metrics_agent(state)
+
+        assert "metrics" in result
+
+    def test_metrics_agent_empty_nf_union_returns_empty(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        """metrics_agent with empty nf_union returns {'metrics': {}}."""
+        state = sample_initial_state
+        state["nf_union"] = []
+
+        result = metrics_agent(state)
+
+        assert result == {"metrics": {}}
 
 
 # ===========================================================================
@@ -678,19 +682,21 @@ class TestBuildNfQueries:
     """Tests for build_nf_queries() — extracted PromQL query builder."""
 
     def test_generates_four_queries_per_nf(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """Should generate 4 queries per NF (error rate, latency, CPU, memory)."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
-        assert len(queries) == len(sample_dag["all_nfs"]) * 4
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
+        assert len(queries) == len(nfs) * 4
         assert len(queries) == 20  # 5 NFs * 4 queries
 
     def test_queries_use_lowercase_nf_names(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """PromQL queries should use lowercase NF names for label matching."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
-        for nf in sample_dag["all_nfs"]:
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
+        for nf in nfs:
             nf_lower = nf.lower()
             nf_queries = [q for q in queries if nf_lower in q]
             # All queries for this NF use lowercase
@@ -698,53 +704,58 @@ class TestBuildNfQueries:
                 assert nf not in q or nf == nf_lower  # uppercase NF name not in query
 
     def test_error_rate_query_pattern(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """Error rate query should use rate() over http_requests_total with 5xx filter."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
         error_queries = [q for q in queries if "http_requests_total" in q]
-        assert len(error_queries) == len(sample_dag["all_nfs"])
+        assert len(error_queries) == len(nfs)
         for q in error_queries:
             assert "rate(" in q
             assert 'status=~"5.."' in q
 
     def test_p95_latency_query_pattern(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """P95 latency query should use histogram_quantile(0.95, ...)."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
         latency_queries = [q for q in queries if "histogram_quantile" in q]
-        assert len(latency_queries) == len(sample_dag["all_nfs"])
+        assert len(latency_queries) == len(nfs)
         for q in latency_queries:
             assert "histogram_quantile(0.95" in q
             assert "http_request_duration_seconds" in q
 
     def test_cpu_query_pattern(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """CPU query should use rate() over container_cpu_usage_seconds_total with pod regex."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
         cpu_queries = [q for q in queries if "container_cpu_usage_seconds_total" in q]
-        assert len(cpu_queries) == len(sample_dag["all_nfs"])
+        assert len(cpu_queries) == len(nfs)
         for q in cpu_queries:
             assert "rate(" in q
             assert "[5m]" in q
 
     def test_memory_query_pattern(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """Memory query should use container_memory_working_set_bytes with pod regex."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
         mem_queries = [q for q in queries if "container_memory_working_set_bytes" in q]
-        assert len(mem_queries) == len(sample_dag["all_nfs"])
+        assert len(mem_queries) == len(nfs)
 
     def test_each_nf_has_all_four_types(
-        self, sample_dag: dict[str, Any]
+        self, sample_dags: list[dict[str, Any]]
     ) -> None:
         """Each NF should have exactly one of each query type."""
-        queries = build_nf_queries(sample_dag["all_nfs"])
+        nfs = sample_dags[0]["all_nfs"]
+        queries = build_nf_queries(nfs)
 
-        for nf in sample_dag["all_nfs"]:
+        for nf in nfs:
             nf_lower = nf.lower()
             nf_queries = [q for q in queries if nf_lower in q]
             assert len(nf_queries) == 4, f"{nf} should have exactly 4 queries"

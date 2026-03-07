@@ -138,12 +138,12 @@ async def _fetch_prometheus_metrics(
 @traceable(name="NfMetricsAgent")
 def metrics_agent(state: TriageState) -> dict[str, Any]:
     """NfMetricsAgent entry point. Pure MCP query, no LLM."""
-    dag = state["dag"]
-    if dag is None:
+    nf_union = state.get("nf_union") or []
+    if not nf_union:
         return {"metrics": {}}
     alert_time = parse_timestamp(state["alert"]["startsAt"])
 
-    queries = build_nf_queries(dag["all_nfs"])
+    queries = build_nf_queries(nf_union)
 
     # Fetch metrics from Prometheus via MCP (graceful degradation on failure)
     raw_results: list[dict[str, Any]] = []
@@ -160,4 +160,4 @@ def metrics_agent(state: TriageState) -> dict[str, Any]:
 
     # Return only the key this agent writes — avoids LangGraph parallel-merge conflict
     # with infra_agent (both start from START in the same step).
-    return {"metrics": organize_metrics_by_nf(raw_results, dag["all_nfs"])}
+    return {"metrics": organize_metrics_by_nf(raw_results, nf_union)}
