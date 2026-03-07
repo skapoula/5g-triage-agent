@@ -650,3 +650,30 @@ def test_identify_evidence_gaps_empty_trace_deviations() -> None:
     state["trace_deviations"] = {}
     gaps = identify_evidence_gaps(state)
     assert "UE trace analysis needed" in gaps
+
+
+def test_generate_final_report_uses_procedure_names():
+    import uuid
+    from triage_agent.agents.rca_agent import generate_final_report
+    from triage_agent.graph import get_initial_state
+    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
+    state = get_initial_state(alert, str(uuid.uuid4()))
+    state["procedure_names"] = ["registration_general", "authentication_5g_aka"]
+    state["layer"] = "application"
+    state["root_nf"] = "AMF"
+    state["failure_mode"] = "timeout"
+    state["confidence"] = 0.85
+    report = generate_final_report(state)
+    assert report["procedure_name"] == "registration_general, authentication_5g_aka"
+    assert report["procedure_name"] != "unknown"
+
+
+def test_generate_final_report_empty_procedure_names():
+    import uuid
+    from triage_agent.agents.rca_agent import generate_final_report
+    from triage_agent.graph import get_initial_state
+    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
+    state = get_initial_state(alert, str(uuid.uuid4()))
+    state["procedure_names"] = None
+    report = generate_final_report(state)
+    assert report["procedure_name"] == "unknown"

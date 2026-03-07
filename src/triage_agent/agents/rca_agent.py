@@ -287,9 +287,10 @@ def generate_final_report(state: TriageState) -> dict[str, Any]:
     Returns:
         Final report dictionary with summary and details
     """
+    procedure_names = state.get("procedure_names") or []
     return {
         "incident_id": state["incident_id"],
-        "procedure_name": state.get("procedure_name", "unknown"),
+        "procedure_name": ", ".join(procedure_names) if procedure_names else "unknown",
         "layer": state.get("layer", "unknown"),
         "root_nf": state.get("root_nf", "unknown"),
         "failure_mode": state.get("failure_mode", "unknown"),
@@ -428,7 +429,7 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
     """
     _cfg = get_config()
     prompt = RCA_PROMPT_TEMPLATE.format(
-        procedure_name=state.get("procedure_name", "unknown"),
+        procedure_name=", ".join(state.get("procedure_names") or ["unknown"]),
         infra_score=state.get("infra_score", 0.0),
         infra_findings_json=json.dumps(state.get("infra_findings"), indent=2),
         dag_json=json.dumps(state.get("dag"), indent=2),
