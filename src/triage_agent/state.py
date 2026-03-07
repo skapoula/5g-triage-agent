@@ -12,12 +12,13 @@ class TriageState(TypedDict):
     infra_score: float  # 0.0-1.0
     infra_findings: dict | None  # Pod metrics, events, resource usage
 
-    # DAG mapping outputs (alert â†’ 3GPP procedure)
-    procedure_name: str | None
-    dag_id: str | None
-    dag: dict | None  # Full DAG structure from Memgraph
-    mapping_confidence: float  # Heuristic mapping confidence
-    mapping_method: str  # "exact_match" | "keyword_match" | "nf_default" | "generic_fallback"
+    # DAG mapping outputs (alert → one or more 3GPP procedures)
+    procedure_names: list[str] | None  # e.g. ["registration_general", "authentication_5g_aka"]
+    dag_ids: list[str] | None
+    dags: list[dict] | None            # Full DAG structures from Memgraph, one per procedure
+    nf_union: list[str] | None         # Deduplicated union of all_nfs across matched DAGs
+    mapping_confidence: float          # Overall mapping quality (0.0-1.0)
+    mapping_method: str                # "exact_match"|"keyword_match"|"nf_default"|"generic_fallback"
 
     # NfMetricsAgent/NfLogsAgent/UeTracesAgent outputs
     metrics: dict | None  # {nf_name: [metric_data]}

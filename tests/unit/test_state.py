@@ -23,9 +23,10 @@ class TestTriageStateFields:
     def test_has_dag_mapping_fields(self) -> None:
         """TriageState must define DAG mapping fields."""
         hints = get_type_hints(TriageState)
-        assert "procedure_name" in hints
-        assert "dag_id" in hints
-        assert "dag" in hints
+        assert "procedure_names" in hints
+        assert "dag_ids" in hints
+        assert "dags" in hints
+        assert "nf_union" in hints
         assert "mapping_confidence" in hints
         assert "mapping_method" in hints
 
@@ -68,9 +69,10 @@ class TestTriageStateFields:
             infra_checked=False,
             infra_score=0.0,
             infra_findings=None,
-            procedure_name=None,
-            dag_id=None,
-            dag=None,
+            procedure_names=None,
+            dag_ids=None,
+            dags=None,
+            nf_union=None,
             mapping_confidence=0.0,
             mapping_method="",
             metrics=None,
@@ -96,6 +98,20 @@ class TestTriageStateFields:
         assert state["infra_score"] == 0.0
         assert state["evidence_chain"] == []
 
+    def test_state_has_plural_dag_fields(self) -> None:
+        """State schema uses list fields for multi-procedure support."""
+        from typing import get_type_hints
+        hints = get_type_hints(TriageState)
+        # New plural fields must exist
+        assert "procedure_names" in hints
+        assert "dag_ids" in hints
+        assert "dags" in hints
+        assert "nf_union" in hints
+        # Old singular fields must be gone
+        assert "procedure_name" not in hints
+        assert "dag_id" not in hints
+        assert "dag" not in hints
+
     def test_state_is_mutable_dict(self) -> None:
         """TriageState should behave as a mutable dict (agents update it)."""
         state = TriageState(
@@ -104,9 +120,10 @@ class TestTriageStateFields:
             infra_checked=False,
             infra_score=0.0,
             infra_findings=None,
-            procedure_name=None,
-            dag_id=None,
-            dag=None,
+            procedure_names=None,
+            dag_ids=None,
+            dags=None,
+            nf_union=None,
             mapping_confidence=0.0,
             mapping_method="",
             metrics=None,

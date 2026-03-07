@@ -57,9 +57,9 @@ def sample_alert() -> dict[str, Any]:
 
 @pytest.fixture
 def sample_dag() -> dict[str, Any]:
-    """Sample DAG structure for registration procedure."""
+    """Sample DAG structure for registration procedure (singular, kept for backwards compat)."""
     return {
-        "name": "Registration_General",
+        "name": "registration_general",
         "spec": "TS 23.502 4.2.2.2.2",
         "procedure": "registration",
         "all_nfs": ["AMF", "AUSF", "UDM", "NRF", "PCF"],
@@ -76,7 +76,7 @@ def sample_dag() -> dict[str, Any]:
                 "nf": "AMF",
                 "action": "Authentication/Security",
                 "keywords": ["Authentication", "Security", "AUSF", "AKA"],
-                "sub_dag": "Authentication_5G_AKA",
+                "sub_dag": "authentication_5g_aka",
                 "optional": False,
                 "failure_patterns": ["*auth*fail*", "*timeout*AUSF*"],
             },
@@ -94,6 +94,46 @@ def sample_dag() -> dict[str, Any]:
 
 
 @pytest.fixture
+def sample_dags() -> list[dict[str, Any]]:
+    """Sample DAG list — one registration procedure DAG."""
+    return [
+        {
+            "name": "registration_general",
+            "spec": "TS 23.502 4.2.2.2.2",
+            "procedure": "registration",
+            "all_nfs": ["AMF", "AUSF", "UDM", "NRF", "PCF"],
+            "phases": [
+                {
+                    "order": 1,
+                    "nf": "UE",
+                    "action": "Registration Request",
+                    "keywords": ["Registration Request", "Initial Registration", "SUCI"],
+                    "optional": False,
+                },
+                {
+                    "order": 9,
+                    "nf": "AMF",
+                    "action": "Authentication/Security",
+                    "keywords": ["Authentication", "Security", "AUSF", "AKA"],
+                    "sub_dag": "authentication_5g_aka",
+                    "optional": False,
+                    "failure_patterns": ["*auth*fail*", "*timeout*AUSF*"],
+                },
+                {
+                    "order": 21,
+                    "nf": "AMF",
+                    "action": "Registration Accept",
+                    "keywords": ["Registration Accept"],
+                    "optional": False,
+                    "success_log": "Registration Accept sent",
+                    "failure_patterns": ["*registration*reject*", "*accept*fail*"],
+                },
+            ],
+        }
+    ]
+
+
+@pytest.fixture
 def sample_initial_state(sample_alert: dict[str, Any]) -> TriageState:
     """Sample initial TriageState for testing."""
     return TriageState(
@@ -102,9 +142,10 @@ def sample_initial_state(sample_alert: dict[str, Any]) -> TriageState:
         infra_checked=False,
         infra_score=0.0,
         infra_findings=None,
-        procedure_name=None,
-        dag_id=None,
-        dag=None,
+        procedure_names=None,
+        dag_ids=None,
+        dags=None,
+        nf_union=None,
         mapping_confidence=0.0,
         mapping_method="",
         metrics=None,
