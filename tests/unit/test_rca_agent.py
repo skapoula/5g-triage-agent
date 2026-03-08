@@ -400,9 +400,19 @@ class TestConfidenceThresholdLogic:
             assert result["evidence_gaps"] is not None
 
 
+_MINIMAL_COMPRESSED_EVIDENCE = {
+    "infra_findings_json": "{}",
+    "dag_json": "[]",
+    "metrics_formatted": "No metrics available.",
+    "logs_formatted": "No logs available.",
+    "trace_deviations_formatted": "No UE trace deviations available.",
+}
+
+
 class TestRcaAgentTimeoutRecovery:
     def test_timeout_returns_sentinel_not_raises(self, sample_initial_state: TriageState) -> None:
         """rca_agent_first_attempt must NOT raise on TimeoutError — returns low-confidence sentinel."""
+        sample_initial_state["compressed_evidence"] = _MINIMAL_COMPRESSED_EVIDENCE
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             side_effect=TimeoutError("LLM timed out"),
@@ -417,6 +427,7 @@ class TestRcaAgentTimeoutRecovery:
 
     def test_timeout_sentinel_does_not_trigger_retry(self, sample_initial_state: TriageState) -> None:
         """Timeout sentinel has needs_more_evidence=False so the pipeline finalises rather than retries."""
+        sample_initial_state["compressed_evidence"] = _MINIMAL_COMPRESSED_EVIDENCE
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             side_effect=TimeoutError("LLM timed out"),
