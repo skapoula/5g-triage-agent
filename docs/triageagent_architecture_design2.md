@@ -21,8 +21,8 @@
 5G TriageAgent v3.2 is a multi-agent LangGraph orchestration system for real-time root cause analysis of 5G core network failures. When Prometheus Alertmanager fires an alert (e.g., `registration_failures > 0`), the system coordinates specialized agents through a directed graph workflow to localize failures across infrastructure, network function, and 3GPP procedure layers.
 
 The architecture implements a multi-agent pipeline:
-**InfraAgent** (parallel with MetricsAgent) â†’ sequential data chain **NfMetricsAgent â†’ NfLogsAgent â†’ UeTracesAgent â†’ EvidenceQuality** â†’ **RCAAgent**
-, where each agent has a focused responsibility and communicates through a shared state object. 3GPP procedure DAGs are pre-loaded into embedded Memgraph.
+**InfraAgent** and **DagMapper** run in parallel from START. DagMapper fans out in parallel to **NfMetricsAgent**, **NfLogsAgent**, and **UeTracesAgent**, which converge at **EvidenceQuality**. A **join_for_rca** barrier then synchronises the infra and evidence branches before **RCAAgent** runs.
+Each agent has a focused responsibility and communicates through a shared state object. 3GPP procedure DAGs are pre-loaded into embedded Memgraph.
 
 | 4 | MCP | Memgraph |
 |---|-----|---------|
@@ -45,16 +45,20 @@ flowchart TD
     B --> C(["START"])
 
     C --> D["InfraAgent<br/>Check pod metrics via MCP"]
-    C --> E["NfMetricsAgent<br/>MCP: Prometheus"]
+    C --> DM["DagMapper<br/>Alert → 3GPP procedure DAGs"]
 
-    E --> E2["NfLogsAgent<br/>MCP: Loki"]
-    E2 --> E3["UeTracesAgent<br/>MCP: Loki"]
-    E3 --> F["EvidenceQuality"]
+    DM --> E["NfMetricsAgent<br/>MCP: Prometheus"]
+    DM --> E2["NfLogsAgent<br/>MCP: Loki (+ HTTP fallback)"]
+    DM --> E3["UeTracesAgent<br/>MCP: Loki + Memgraph"]
 
-    D --> G
-    F --> G
+    E --> F["EvidenceQuality"]
+    E2 --> F
+    E3 --> F
 
-    G["RCAAgent<br/>Analyze:<br/>â€¢ Infra â€¢ Metrics â€¢ Logs<br/>â€¢ UE Traces â€¢ DAG Cypher deviation"]
+    D --> J["join_for_rca<br/>Barrier"]
+    F --> J
+
+    J --> G["RCAAgent<br/>Analyze:<br/>• Infra • Metrics • Logs<br/>• UE Traces • DAG deviation"]
 
     G --> H["RCA summary + artifacts"]
     H --> I(["END"])
@@ -84,7 +88,7 @@ All agents read/write to a LangGraph state object.
 
 ### 3.1 InfraAgent
 
-**Trigger**: Always runs at START (parallel with NfMetricsAgent)
+**Trigger**: Always runs at START (parallel with DagMapper)
 **LLM Calls**: 0 (rule-based)
 
 **Source**: `src/triage_agent/agents/infra_agent.py`
@@ -153,21 +157,21 @@ Auto-generated reference DAGs in Memgraph:
 
 ---
 
-### 3.3 NfMetricsAgent, NfLogsAgent & UeTracesAgent (Sequential Data Collection)
+### 3.3 NfMetricsAgent, NfLogsAgent & UeTracesAgent (Parallel Data Collection)
 
-The three data collection agents execute sequentially: NfMetricsAgent runs first, then NfLogsAgent, then UeTracesAgent, before EvidenceQuality aggregates their results. Each queries MCP servers for their respective data types.
+The three data collection agents all fan out in parallel from DagMapper and converge at EvidenceQuality. Each queries MCP servers for their respective data types using the `dags` and `nf_union` fields written by DagMapper.
 
 #### 3.3.1 NfMetricsAgent
 
-**Trigger**: `state["dag"]` is populated
+**Trigger**: `state["nf_union"]` populated by DagMapper
 **LLM Calls**: 0 (pure MCP query)
 **Source**: `src/triage_agent/agents/metrics_agent.py`
 
-Pulls per-NF metrics (error rate, p95 latency, CPU, memory) from Prometheus for the candidate NF set provided by the DAG.
+Pulls per-NF metrics (error rate, p95 latency, CPU, memory) from Prometheus for the candidate NF set provided by the DAG union.
 
 #### 3.3.2 NfLogsAgent
 
-**Trigger**: `state["metrics"]` is populated (runs after NfMetricsAgent)
+**Trigger**: `state["dags"]` populated by DagMapper (runs in parallel with NfMetricsAgent and UeTracesAgent)
 **LLM Calls**: 0 (two-path MCP + HTTP fallback)
 **Source**: `src/triage_agent/agents/logs_agent.py`
 
@@ -180,7 +184,7 @@ Pulls ERROR/WARN/FATAL logs from Loki for the candidate NF set. Annotates log en
 
 #### 3.3.3 UeTracesAgent
 
-**Trigger**: Runs after NfLogsAgent (sequential chain)
+**Trigger**: `state["dags"]` populated by DagMapper (runs in parallel with NfMetricsAgent and NfLogsAgent)
 **LLM Calls**: 0 (two-path MCP + HTTP fallback, mirrors NfLogsAgent)
 **Source**: `src/triage_agent/agents/ue_traces_agent.py`
 **Trace Script**: `scripts/trace_ue_v3.sh`
@@ -190,7 +194,7 @@ Discovers all IMSIs active within the time window of the metric alarm. Pipeline:
 2. Per-IMSI trace construction
 3. Memgraph ingestion + deviation detection against reference DAG
 
-Outputs `discovered_imsis`, `traces_ready`, and `trace_deviations` to state.
+Outputs `discovered_imsis`, `traces_ready`, and `trace_deviations` (`dict[str, list[dict]]` keyed by dag_name) to state.
 
 #### 3.3.4 Evidence Quality Scoring
 
@@ -212,7 +216,7 @@ After agents complete, computes evidence quality based on data diversity:
 
 ### 3.4 RCAAgent
 
-**Trigger**: NfMetricsAgent, NfLogsAgent, and UeTracesAgent complete
+**Trigger**: `join_for_rca` barrier node (waits for both `infra_agent` and `evidence_quality` to complete)
 **LLM Calls**: 1 per attempt (max 2 total)
 **Source**: `src/triage_agent/agents/rca_agent.py`
 
@@ -224,11 +228,12 @@ After agents complete, computes evidence quality based on data diversity:
 #### 3.4.1 First Attempt Analysis
 
 **Input**:
-- `state["dag"]` â†’ 3GPP procedure structure
-- `state["metrics"]` â†’ per-NF metrics
-- `state["logs"]` â†’ per-NF logs
-- `state["trace_deviations"]` â†’ per-IMSI DAG deviation results from Memgraph
-- `state["evidence_quality_score"]` â†’ data completeness
+- `state["dags"]` → list of 3GPP procedure structures matched by DagMapper
+- `state["metrics"]` → per-NF metrics
+- `state["logs"]` → per-NF logs
+- `state["trace_deviations"]` → `dict[str, list[dict]]` keyed by dag_name — per-procedure deviation results from Memgraph
+- `state["evidence_quality_score"]` → data completeness
+- `state["infra_score"]` / `state["infra_findings"]` → infrastructure layer findings
 
 The LLM prompt template is defined in `rca_agent.py` â†’ `RCA_PROMPT_TEMPLATE`. It provides the LLM with infrastructure findings, procedure DAG, application evidence (metrics, logs, trace deviations), and a structured analysis framework.
 
@@ -251,23 +256,34 @@ Minimum confidence threshold: 0.70 (lowered to 0.65 if evidence quality â‰¥ 
 
 ```mermaid
 flowchart TD
-    START(["START"]) --> INFRA & M
+    START(["START"]) --> INFRA & DAG
 
     subgraph left [" "]
-        INFRA["InfraAgent<br/>â€¢ MCP: Prometheus<br/>â€¢ infra_score<br/>â€¢ infra_findings"]
+        INFRA["InfraAgent<br/>• MCP: Prometheus<br/>• infra_score<br/>• infra_findings"]
+    end
+
+    subgraph middle [" "]
+        DAG["DagMapper<br/>• Alert → 3GPP procedures<br/>• dags, nf_union"]
     end
 
     subgraph right [" "]
-        M["NfMetricsAgent<br/>â€¢ MCP: Prometheus"]
-        M --> L["NfLogsAgent<br/>â€¢ MCP: Loki"]
-        L --> U["UeTracesAgent<br/>â€¢ MCP: Loki<br/>â€¢ Memgraph ingest"]
-        U --> EQ["EvidenceQuality"]
+        M["NfMetricsAgent<br/>• MCP: Prometheus"]
+        L["NfLogsAgent<br/>• MCP: Loki (+ HTTP fallback)"]
+        U["UeTracesAgent<br/>• MCP: Loki<br/>• Memgraph ingest"]
+        EQ["EvidenceQuality"]
+        M --> EQ
+        L --> EQ
+        U --> EQ
     end
 
-    INFRA --> RCA
-    EQ --> RCA
+    DAG --> M
+    DAG --> L
+    DAG --> U
 
-    RCA["RCAAgent<br/>Inputs: infra_findings, metrics,<br/>logs, UE traces, DAG from Memgraph<br/>LLM analyze â†’ Layer decision â†’ Root cause"]
+    INFRA --> JOIN["join_for_rca<br/>Barrier"]
+    EQ --> JOIN
+
+    JOIN --> RCA["RCAAgent<br/>Inputs: infra_findings, metrics,<br/>logs, UE traces, DAGs from Memgraph<br/>LLM analyze → Layer decision → Root cause"]
 
     RCA --> FIN["Finalize"]
     FIN --> END_NODE(["END"])
@@ -284,20 +300,24 @@ flowchart TD
 | Node | Function |
 |------|----------|
 | `infra_agent` | `infra_agent` (from `agents/infra_agent.py`) |
+| `dag_mapper` | `dag_mapper` (from `agents/dag_mapper.py`) |
 | `metrics_agent` | `metrics_agent` (from `agents/metrics_agent.py`) |
 | `logs_agent` | `logs_agent` (from `agents/logs_agent.py`) |
 | `traces_agent` | `discover_and_trace_imsis` (from `agents/ue_traces_agent.py`) |
 | `evidence_quality` | `compute_evidence_quality` (from `agents/evidence_quality.py`) |
+| `join_for_rca` | `join_for_rca` (inline, barrier — waits for both infra and evidence branches) |
 | `rca_agent` | `rca_agent_first_attempt` (from `agents/rca_agent.py`) |
 | `increment_attempt` | `increment_attempt` (inline, increments `attempt_count`) |
 | `finalize` | `finalize_report` (inline, assembles `final_report`) |
 
 **Edges**:
 
-- `START → infra_agent` (parallel)
-- `START → metrics_agent` (parallel)
-- Sequential data chain: `metrics_agent → logs_agent → traces_agent → evidence_quality`
-- Join at RCA: `infra_agent → rca_agent`, `evidence_quality → rca_agent`
+- `START → infra_agent` (parallel with dag_mapper)
+- `START → dag_mapper` (parallel with infra_agent)
+- Parallel fan-out from dag_mapper: `dag_mapper → metrics_agent`, `dag_mapper → logs_agent`, `dag_mapper → traces_agent`
+- Parallel converge at evidence: `metrics_agent → evidence_quality`, `logs_agent → evidence_quality`, `traces_agent → evidence_quality`
+- Barrier join: `infra_agent → join_for_rca`, `evidence_quality → join_for_rca`
+- `join_for_rca → rca_agent`
 - Conditional routing: `rca_agent → {retry: increment_attempt | finalize: finalize}` (via `should_retry()`)
 - Retry loop: `increment_attempt → rca_agent`
 - `finalize → END`
