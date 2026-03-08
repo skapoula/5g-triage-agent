@@ -210,8 +210,8 @@ Create `.claude/settings.local.json`:
   "env": {
     "MEMGRAPH_HOST": "localhost",
     "MEMGRAPH_PORT": "7687",
-    "PROMETHEUS_URL": "http://localhost:9090",
-    "LOKI_URL": "http://localhost:3100",
+    "PROMETHEUS_URL": "http://kube-prom-kube-prometheus-prometheus.monitoring:9090",
+    "LOKI_URL": "http://loki.monitoring:3100",
     "LANGSMITH_PROJECT": "5g-triage-agent-v3"
   },
   "hooks": {

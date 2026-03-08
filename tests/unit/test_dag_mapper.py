@@ -7,7 +7,6 @@ import pytest
 
 from triage_agent.state import TriageState
 
-
 # --- Pure function tests (no Memgraph) ---
 
 class TestMapAlertToProcedures:

@@ -654,6 +654,7 @@ def test_identify_evidence_gaps_empty_trace_deviations() -> None:
 
 def test_generate_final_report_uses_procedure_names():
     import uuid
+
     from triage_agent.agents.rca_agent import generate_final_report
     from triage_agent.graph import get_initial_state
     alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
@@ -670,6 +671,7 @@ def test_generate_final_report_uses_procedure_names():
 
 def test_generate_final_report_empty_procedure_names():
     import uuid
+
     from triage_agent.agents.rca_agent import generate_final_report
     from triage_agent.graph import get_initial_state
     alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
@@ -681,6 +683,7 @@ def test_generate_final_report_empty_procedure_names():
 
 def test_second_attempt_complete_set_on_retry(monkeypatch):
     import uuid
+
     import triage_agent.agents.rca_agent as ra
     from triage_agent.graph import get_initial_state
     alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
@@ -699,6 +702,7 @@ def test_second_attempt_complete_set_on_retry(monkeypatch):
 
 def test_second_attempt_complete_false_on_first_attempt(monkeypatch):
     import uuid
+
     import triage_agent.agents.rca_agent as ra
     from triage_agent.graph import get_initial_state
     alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
@@ -717,7 +721,8 @@ def test_second_attempt_complete_false_on_first_attempt(monkeypatch):
 
 def test_rca_prompt_includes_dag_content(monkeypatch):
     """RCA prompt must include actual DAG content, not null."""
-    import json, uuid
+    import uuid
+
     import triage_agent.agents.rca_agent as ra
     from triage_agent.graph import get_initial_state
 

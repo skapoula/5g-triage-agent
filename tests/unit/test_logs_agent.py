@@ -27,11 +27,11 @@ from triage_agent.agents.logs_agent import (
     organize_and_annotate_logs,
     wildcard_match,
 )
+from triage_agent.mcp.client import MCPTimeoutError
+from triage_agent.state import TriageState
 from triage_agent.utils import extract_log_level as _extract_log_level
 from triage_agent.utils import parse_loki_response as _parse_loki_response
 from triage_agent.utils import parse_timestamp
-from triage_agent.mcp.client import MCPTimeoutError
-from triage_agent.state import TriageState
 
 # ---------------------------------------------------------------------------
 # Fixtures

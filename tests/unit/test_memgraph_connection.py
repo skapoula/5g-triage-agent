@@ -463,7 +463,6 @@ class TestCleanupIncidentTraces:
 
 def test_ingest_captured_trace_uses_message_field() -> None:
     """Cypher must write event.message and event.order, not event.action."""
-    from unittest.mock import MagicMock
     from triage_agent.memgraph.connection import MemgraphConnection
     conn = MemgraphConnection.__new__(MemgraphConnection)
     conn._max_retries = 3
@@ -526,6 +525,7 @@ def test_execute_cypher_write_raises_after_max_retries(mock_sleep: MagicMock) ->
 def test_detect_deviation_uses_message_field() -> None:
     """Cypher must compare event.message, not event.action."""
     from unittest.mock import MagicMock
+
     from triage_agent.memgraph.connection import MemgraphConnection
     conn = MemgraphConnection.__new__(MemgraphConnection)
     conn._max_retries = 3

@@ -1,4 +1,4 @@
-from triage_agent.utils import parse_timestamp, extract_log_level, parse_loki_response
+from triage_agent.utils import extract_log_level, parse_loki_response, parse_timestamp
 
 
 def test_parse_timestamp_utc():

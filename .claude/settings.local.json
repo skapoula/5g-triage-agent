@@ -2,8 +2,8 @@
   "env": {
     "MEMGRAPH_HOST": "localhost",
     "MEMGRAPH_PORT": "7687",
-    "PROMETHEUS_URL": "http://localhost:9090",
-    "LOKI_URL": "http://localhost:3100",
+    "PROMETHEUS_URL": "http://kube-prom-kube-prometheus-prometheus.monitoring:9090",
+    "LOKI_URL": "http://loki.monitoring:3100",
     "LANGSMITH_PROJECT": "5g-triage-agent-v3",
     "LLM_API_KEY": ""
   },
@@ -27,7 +27,17 @@
       "Bash(curl:*)",
       "Bash(command -v:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(kubectl get:*)",
+      "Bash(ss:*)",
+      "Bash(netstat -tlnp)",
+      "Read(//proc/2049027/net/**)",
+      "Bash(python3:*)",
+      "Bash(pgrep:*)",
+      "Bash(PROMETHEUS_URL=http://kube-prom-kube-prometheus-prometheus.monitoring:9090 LOKI_URL=http://loki.monitoring:3100 pytest:*)",
+      "Read(//etc/**)",
+      "Read(//etc/profile.d/**)",
+      "Bash(printenv PROMETHEUS_URL:*)"
     ],
     "deny": [
       "Bash(rm -rf /)",

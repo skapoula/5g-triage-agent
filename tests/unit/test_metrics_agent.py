@@ -20,8 +20,8 @@ from triage_agent.agents.metrics_agent import (
     metrics_agent,
     organize_metrics_by_nf,
 )
-from triage_agent.utils import parse_timestamp
 from triage_agent.state import TriageState
+from triage_agent.utils import parse_timestamp
 
 # ---------------------------------------------------------------------------
 # Fixtures

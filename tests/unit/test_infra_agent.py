@@ -20,8 +20,8 @@ from triage_agent.agents.infra_agent import (
     extract_restart_counts,
     infra_agent,
 )
-from triage_agent.utils import parse_timestamp
 from triage_agent.state import TriageState
+from triage_agent.utils import parse_timestamp
 
 # ---------------------------------------------------------------------------
 # Fixtures (local to this module)
