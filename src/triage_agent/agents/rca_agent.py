@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field, SecretStr
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
-from triage_agent.utils import compress_dag, compress_trace_deviations, count_tokens
+from triage_agent.utils import (  # noqa: F401  # re-exported for backwards compat
+    compress_dag,
+    compress_trace_deviations,
+    count_tokens,
+)
 
 logger = logging.getLogger(__name__)
 

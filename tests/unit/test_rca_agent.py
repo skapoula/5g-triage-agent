@@ -869,21 +869,21 @@ class TestCompressDag:
     """compress_dag: progressively strips then truncates DAG phases."""
 
     def test_none_input_returns_empty_list(self) -> None:
-        from triage_agent.agents.rca_agent import compress_dag
+        from triage_agent.utils import compress_dag
         assert compress_dag(None, 800) == []
 
     def test_empty_list_returns_empty_list(self) -> None:
-        from triage_agent.agents.rca_agent import compress_dag
+        from triage_agent.utils import compress_dag
         assert compress_dag([], 800) == []
 
     def test_small_dag_returned_unchanged(self) -> None:
-        from triage_agent.agents.rca_agent import compress_dag
+        from triage_agent.utils import compress_dag
         dags = [{"name": "reg", "phases": [{"order": 1, "action": "req"}], "all_nfs": ["AMF"]}]
         result = compress_dag(dags, 10000)
         assert result == dags
 
     def test_keywords_stripped_when_over_budget(self) -> None:
-        from triage_agent.agents.rca_agent import compress_dag
+        from triage_agent.utils import compress_dag
         big_keywords = ["keyword_" + str(i) for i in range(100)]
         dags = [{"name": "reg", "all_nfs": ["AMF"], "phases": [
             {"order": i, "action": f"step {i}", "keywords": big_keywords, "failure_patterns": []}
@@ -899,7 +899,7 @@ class TestCompressDag:
 
     def test_failure_pattern_phases_kept_on_extreme_budget(self) -> None:
 
-        from triage_agent.agents.rca_agent import compress_dag
+        from triage_agent.utils import compress_dag
         dags = [{"name": "reg", "all_nfs": ["AMF"], "phases": [
             {"order": 1, "action": "start", "failure_patterns": []},
             {"order": 2, "action": "auth", "failure_patterns": ["*auth*fail*"]},
@@ -916,21 +916,21 @@ class TestCompressTraceDeviations:
     """compress_trace_deviations: per-DAG slice and budget enforcement."""
 
     def test_none_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_trace_deviations
+        from triage_agent.utils import compress_trace_deviations
         assert compress_trace_deviations(None, 500) == {}
 
     def test_empty_dict_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_trace_deviations
+        from triage_agent.utils import compress_trace_deviations
         assert compress_trace_deviations({}, 500) == {}
 
     def test_within_budget_returned_unchanged(self) -> None:
-        from triage_agent.agents.rca_agent import compress_trace_deviations
+        from triage_agent.utils import compress_trace_deviations
         devs = {"reg": [{"deviation_point": 1, "expected": "A", "actual": "B"}]}
         result = compress_trace_deviations(devs, 10000)
         assert result == devs
 
     def test_truncated_to_max_deviations_per_dag(self) -> None:
-        from triage_agent.agents.rca_agent import compress_trace_deviations
+        from triage_agent.utils import compress_trace_deviations
         devs = {"reg": [{"deviation_point": i} for i in range(10)]}
         result = compress_trace_deviations(devs, 10000)
         # Default cfg.rca_max_deviations_per_dag = 3
@@ -939,7 +939,7 @@ class TestCompressTraceDeviations:
     def test_dag_with_no_deviations_dropped_when_over_budget(self) -> None:
         import json
 
-        from triage_agent.agents.rca_agent import compress_trace_deviations
+        from triage_agent.utils import compress_trace_deviations
         devs = {
             "empty_dag": [],
             "active_dag": [{"deviation_point": i, "data": "x" * 100} for i in range(3)],

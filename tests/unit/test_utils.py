@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 
 from triage_agent.utils import (
+    compress_dag,
+    compress_trace_deviations,
     count_tokens,
     extract_log_level,
     parse_loki_response,
@@ -164,9 +166,6 @@ def test_save_artifact_does_not_raise_on_bad_path() -> None:
     save_artifact("inc", "x.json", {"a": 1}, "/proc/triage_test_nonexistent")
     # Give background thread time to attempt and fail
     time.sleep(0.1)
-
-
-from triage_agent.utils import compress_dag, compress_trace_deviations
 
 
 class TestCompressDag:
