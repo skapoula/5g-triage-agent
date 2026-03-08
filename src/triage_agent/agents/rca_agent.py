@@ -402,7 +402,22 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
         **evidence,
     )
 
-    analysis = llm_analyze_evidence(prompt)
+    try:
+        analysis = llm_analyze_evidence(prompt)
+    except TimeoutError:
+        logger.warning(
+            "LLM timed out for incident %s; returning low-confidence sentinel",
+            state.get("incident_id"),
+        )
+        return {
+            "root_nf": "unknown",
+            "failure_mode": "llm_timeout",
+            "confidence": 0.0,
+            "evidence_chain": [],
+            "layer": "unknown",
+            "needs_more_evidence": False,
+            "evidence_gaps": ["LLM analysis unavailable due to timeout"],
+        }
 
     root_nf = analysis["root_nf"]
     failure_mode = analysis["failure_mode"]

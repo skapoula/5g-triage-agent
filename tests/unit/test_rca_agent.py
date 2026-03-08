@@ -400,23 +400,34 @@ class TestConfidenceThresholdLogic:
             assert result["evidence_gaps"] is not None
 
 
-class TestLLMErrorPropagation:
-    """LLM errors propagate — no silent fallback."""
-
-    def test_llm_timeout_propagates(
-        self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
-    ) -> None:
-        """TimeoutError from LLM should propagate out of rca_agent_first_attempt."""
-        import pytest
-
-        state = sample_initial_state
-        state["dag"] = sample_dag
-
+class TestRcaAgentTimeoutRecovery:
+    def test_timeout_returns_sentinel_not_raises(self, sample_initial_state: TriageState) -> None:
+        """rca_agent_first_attempt must NOT raise on TimeoutError — returns low-confidence sentinel."""
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
-            side_effect=TimeoutError("LLM request timed out"),
-        ), pytest.raises(TimeoutError):
-            rca_agent_first_attempt(state)
+            side_effect=TimeoutError("LLM timed out"),
+        ):
+            result = rca_agent_first_attempt(sample_initial_state)
+
+        assert result["confidence"] == 0.0
+        assert result["root_nf"] == "unknown"
+        assert result["failure_mode"] == "llm_timeout"
+        assert result["needs_more_evidence"] is False
+        assert result["evidence_gaps"] == ["LLM analysis unavailable due to timeout"]
+
+    def test_timeout_sentinel_does_not_trigger_retry(self, sample_initial_state: TriageState) -> None:
+        """Timeout sentinel has needs_more_evidence=False so the pipeline finalises rather than retries."""
+        with patch(
+            "triage_agent.agents.rca_agent.llm_analyze_evidence",
+            side_effect=TimeoutError("LLM timed out"),
+        ):
+            result = rca_agent_first_attempt(sample_initial_state)
+
+        assert result["needs_more_evidence"] is False
+
+
+class TestLLMErrorPropagation:
+    """LLM errors propagate — no silent fallback."""
 
     def test_llm_connection_error_propagates(
         self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
