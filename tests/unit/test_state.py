@@ -49,8 +49,6 @@ class TestTriageStateFields:
         assert "layer" in hints
         assert "confidence" in hints
         assert "evidence_chain" in hints
-        assert "degraded_mode" in hints
-        assert "degraded_reason" in hints
 
     def test_has_control_flow_fields(self) -> None:
         """TriageState must define control flow fields."""
@@ -86,8 +84,6 @@ class TestTriageStateFields:
             layer="",
             confidence=0.0,
             evidence_chain=[],
-            degraded_mode=False,
-            degraded_reason=None,
             attempt_count=1,
             max_attempts=2,
             needs_more_evidence=False,
@@ -137,8 +133,6 @@ class TestTriageStateFields:
             layer="",
             confidence=0.0,
             evidence_chain=[],
-            degraded_mode=False,
-            degraded_reason=None,
             attempt_count=1,
             max_attempts=2,
             needs_more_evidence=False,

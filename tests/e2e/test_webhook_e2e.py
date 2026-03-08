@@ -121,8 +121,6 @@ def _mock_final_report(incident_id: str, layer: str, root_nf: str) -> dict[str, 
         "procedure_name": "Registration_General",
         "attempt_count": 1,
         "evidence_chain": [],
-        "degraded_mode": False,
-        "degraded_reason": None,
     }
 
 
@@ -356,3 +354,140 @@ class TestLiveWorkflowCompletion:
         # All incident IDs must be distinct
         ids = {r.json()["incident_id"] for r in results}
         assert len(ids) == 3
+
+
+# ---------------------------------------------------------------------------
+# /incidents/{incident_id} — schema assertions (in-process and live)
+# ---------------------------------------------------------------------------
+
+
+class TestIncidentEndpoint:
+    def test_unknown_incident_returns_404(self, http_client: httpx.Client) -> None:
+        resp = http_client.get("/incidents/does-not-exist-00000000")
+        assert resp.status_code == 404
+
+    def test_accepted_incident_appears_in_store(self, http_client: httpx.Client) -> None:
+        resp = http_client.post("/webhook", json=_registration_payload())
+        assert resp.status_code == 200
+        incident_id = resp.json()["incident_id"]
+
+        poll = http_client.get(f"/incidents/{incident_id}")
+        assert poll.status_code == 200
+        data = poll.json()
+        assert data["incident_id"] == incident_id
+        assert data["status"] in ("pending", "complete", "failed")
+
+    def test_incident_response_schema_after_completion(
+        self, http_client: httpx.Client
+    ) -> None:
+        resp = http_client.post("/webhook", json=_registration_payload())
+        incident_id = resp.json()["incident_id"]
+
+        deadline = time.time() + 10
+        poll_data: dict[str, Any] = {}
+        while time.time() < deadline:
+            r = http_client.get(f"/incidents/{incident_id}")
+            poll_data = r.json()
+            if poll_data["status"] != "pending":
+                break
+            time.sleep(0.5)
+
+        assert poll_data["status"] in ("complete", "failed")
+        assert "incident_id" in poll_data
+        if poll_data["status"] == "complete":
+            assert isinstance(poll_data["final_report"], dict)
+
+
+# ---------------------------------------------------------------------------
+# Live-server-only: full pipeline poll-to-completion
+# ---------------------------------------------------------------------------
+
+
+class TestLiveTriageCompletion:
+    """Fire a real Alertmanager webhook at the live stack and poll
+    /incidents/{id} until the RCA final_report is returned.
+
+    Exercises the complete pipeline: InfraAgent → NfMetricsAgent +
+    NfLogsAgent + UeTracesAgent → EvidenceQuality → RCAAgent — all
+    hitting real Prometheus, Loki, and Memgraph in the 5g-core namespace.
+
+    Only runs when --alert-webhook is supplied.
+    """
+
+    _POLL_INTERVAL_S = 3
+    _TIMEOUT_S = 120
+
+    def _poll_until_complete(
+        self, http_client: httpx.Client, incident_id: str
+    ) -> dict[str, Any]:
+        deadline = time.time() + self._TIMEOUT_S
+        while time.time() < deadline:
+            r = http_client.get(f"/incidents/{incident_id}")
+            assert r.status_code == 200
+            data = r.json()
+            if data["status"] in ("complete", "failed"):
+                return data
+            time.sleep(self._POLL_INTERVAL_S)
+        raise TimeoutError(
+            f"Triage did not complete within {self._TIMEOUT_S}s "
+            f"for incident {incident_id}"
+        )
+
+    def test_registration_failure_produces_final_report(
+        self, http_client: httpx.Client, is_live: bool
+    ) -> None:
+        if not is_live:
+            pytest.skip("Live server not configured (--alert-webhook not set)")
+
+        resp = http_client.post("/webhook", json=_registration_payload())
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "accepted"
+        incident_id = resp.json()["incident_id"]
+
+        result = self._poll_until_complete(http_client, incident_id)
+
+        assert result["status"] == "complete", f"Triage failed: {result}"
+        report = result["final_report"]
+        assert isinstance(report, dict)
+        assert report["incident_id"] == incident_id
+        assert report["layer"] in ("infrastructure", "application")
+        assert isinstance(report["confidence"], float)
+        assert 0.0 <= report["confidence"] <= 1.0
+        assert isinstance(report["evidence_quality_score"], float)
+        assert isinstance(report["evidence_chain"], list)
+        assert report["attempt_count"] >= 1
+
+    def test_pdu_session_failure_produces_final_report(
+        self, http_client: httpx.Client, is_live: bool
+    ) -> None:
+        if not is_live:
+            pytest.skip("Live server not configured (--alert-webhook not set)")
+
+        resp = http_client.post("/webhook", json=_pdu_session_payload())
+        assert resp.status_code == 200
+        incident_id = resp.json()["incident_id"]
+
+        result = self._poll_until_complete(http_client, incident_id)
+
+        assert result["status"] == "complete", f"Triage failed: {result}"
+        report = result["final_report"]
+        assert report["incident_id"] == incident_id
+        assert report["layer"] in ("infrastructure", "application")
+        assert 0.0 <= report["confidence"] <= 1.0
+
+    def test_auth_failure_produces_final_report(
+        self, http_client: httpx.Client, is_live: bool
+    ) -> None:
+        if not is_live:
+            pytest.skip("Live server not configured (--alert-webhook not set)")
+
+        resp = http_client.post("/webhook", json=_auth_failure_payload())
+        assert resp.status_code == 200
+        incident_id = resp.json()["incident_id"]
+
+        result = self._poll_until_complete(http_client, incident_id)
+
+        assert result["status"] == "complete", f"Triage failed: {result}"
+        report = result["final_report"]
+        assert report["incident_id"] == incident_id
+        assert 0.0 <= report["confidence"] <= 1.0

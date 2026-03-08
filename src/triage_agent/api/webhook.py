@@ -36,6 +36,17 @@ app.add_middleware(
 # Compile the workflow once at startup rather than per request
 _workflow = create_workflow()
 
+# In-memory incident store.  None = pending, dict = complete or failed.
+_incident_store: dict[str, dict[str, Any] | None] = {}
+
+
+class IncidentResponse(BaseModel):
+    """Response for GET /incidents/{incident_id}."""
+
+    incident_id: str
+    status: str  # "pending" | "complete" | "failed"
+    final_report: dict[str, Any] | None = None
+
 
 async def _run_triage(alert_dict: dict[str, Any], incident_id: str) -> None:
     """Run the LangGraph triage workflow in a background thread.
@@ -46,12 +57,14 @@ async def _run_triage(alert_dict: dict[str, Any], incident_id: str) -> None:
     try:
         initial_state = get_initial_state(alert=alert_dict, incident_id=incident_id)
         result = await asyncio.to_thread(_workflow.invoke, initial_state)
+        _incident_store[incident_id] = result.get("final_report") or {}
         logger.info(
             f"Triage complete: incident_id={incident_id}, "
             f"report={result.get('final_report')}"
         )
     except Exception:
         logger.exception(f"Triage failed: incident_id={incident_id}")
+        _incident_store[incident_id] = {"error": "triage_failed"}
 
 
 class AlertLabel(BaseModel):
@@ -169,6 +182,7 @@ async def receive_alert(
             alerts_received=len(payload.alerts),
         )
 
+    _incident_store[incident_id] = None  # mark as pending before dispatching
     background_tasks.add_task(_run_triage, firing_alerts[0].model_dump(), incident_id)
 
     return TriageResponse(
@@ -177,6 +191,24 @@ async def receive_alert(
         message=f"Processing {len(firing_alerts)} firing alerts",
         alerts_received=len(payload.alerts),
     )
+
+
+@app.get("/incidents/{incident_id}", response_model=IncidentResponse)
+async def get_incident(incident_id: str) -> IncidentResponse:
+    """Poll triage status for a given incident_id.
+
+    Returns 404 if the incident_id is unknown (never submitted).
+    Status is "pending" while the background task is running, "complete"
+    when a final_report was produced, and "failed" if the workflow raised.
+    """
+    if incident_id not in _incident_store:
+        raise HTTPException(status_code=404, detail=f"Unknown incident_id: {incident_id}")
+    entry = _incident_store[incident_id]
+    if entry is None:
+        return IncidentResponse(incident_id=incident_id, status="pending")
+    if "error" in entry:
+        return IncidentResponse(incident_id=incident_id, status="failed", final_report=entry)
+    return IncidentResponse(incident_id=incident_id, status="complete", final_report=entry)
 
 
 @app.get("/")

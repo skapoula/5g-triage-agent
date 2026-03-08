@@ -52,7 +52,6 @@ def finalize_report(state: TriageState) -> TriageState:
         "evidence_chain": state.get("evidence_chain", []),
         "infra_score": state.get("infra_score"),
         "evidence_quality_score": state.get("evidence_quality_score"),
-        "degraded_mode": state.get("degraded_mode", False),
         "attempt_count": state.get("attempt_count", 1),
     }
     return state
@@ -84,7 +83,6 @@ def create_workflow() -> Any:
     workflow.add_node("traces_agent", discover_and_trace_imsis)
     workflow.add_node("evidence_quality", compute_evidence_quality)
     workflow.add_node("rca_agent", rca_agent_first_attempt)
-    workflow.add_node("join_for_rca", join_for_rca)
     workflow.add_node("increment_attempt", increment_attempt)
     workflow.add_node("finalize", finalize_report)
 
@@ -102,11 +100,10 @@ def create_workflow() -> Any:
     workflow.add_edge("logs_agent", "evidence_quality")
     workflow.add_edge("traces_agent", "evidence_quality")
 
-    # Both branches (infra + evidence) must complete before RCA
-    # join_for_rca acts as a barrier: both branches funnel into it, then one edge to rca_agent
-    workflow.add_edge("infra_agent", "join_for_rca")
-    workflow.add_edge("evidence_quality", "join_for_rca")
-    workflow.add_edge("join_for_rca", "rca_agent")
+    # evidence_quality → rca_agent directly.
+    # infra_agent runs concurrently with dag_mapper (same superstep) so its results
+    # are already merged into state by the time rca_agent executes.
+    workflow.add_edge("evidence_quality", "rca_agent")
 
     # Conditional routing after RCA
     workflow.add_conditional_edges(
@@ -160,8 +157,6 @@ def get_initial_state(alert: dict[str, Any], incident_id: str) -> TriageState:
         layer="",
         confidence=0.0,
         evidence_chain=[],
-        degraded_mode=False,
-        degraded_reason=None,
         attempt_count=1,
         max_attempts=get_config().max_attempts,
         needs_more_evidence=False,

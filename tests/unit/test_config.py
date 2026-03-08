@@ -88,6 +88,9 @@ _CONFIG_ENV_KEYS = [
     # observability_config
     "LANGSMITH_PROJECT",
     "LANGSMITH_API_KEY",
+    "LANGCHAIN_TRACING_V2",
+    "LANGCHAIN_PROJECT",
+    "LANGCHAIN_ENDPOINT",
     "APP_VERSION",
 ]
 
@@ -566,3 +569,43 @@ class TestObservabilityConfig:
         with patch.dict(os.environ, {**_CLEAN_ENV, "APP_VERSION": "4.0.0"}, clear=True):
             config = TriageAgentConfig()
         assert config.app_version == "4.0.0"
+
+
+class TestLangSmithConfig:
+    """LangSmith tracing env var wiring via model_validator."""
+
+    def test_env_vars_set_when_tracing_enabled(self) -> None:
+        """LANGCHAIN_TRACING_V2=true wires env vars into os.environ."""
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            TriageAgentConfig(
+                langchain_tracing_v2="true",
+                langsmith_api_key="sk-test",
+                langchain_project="my-project",
+                langchain_endpoint="https://api.smith.langchain.com",
+            )
+            assert os.environ.get("LANGCHAIN_TRACING_V2") == "true"
+            assert os.environ.get("LANGCHAIN_PROJECT") == "my-project"
+            assert os.environ.get("LANGSMITH_API_KEY") == "sk-test"
+
+    def test_env_vars_not_set_when_tracing_disabled(self) -> None:
+        """LANGCHAIN_TRACING_V2=false must not force env vars to 'true'."""
+        env = {**_CLEAN_ENV}
+        env.pop("LANGCHAIN_TRACING_V2", None)
+        with patch.dict(os.environ, env, clear=True):
+            TriageAgentConfig(langchain_tracing_v2="false")
+            assert os.environ.get("LANGCHAIN_TRACING_V2") != "true"
+
+    def test_langchain_project_defaults_to_5g_triage_agent(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.langchain_project == "5g-triage-agent"
+
+    def test_existing_env_var_not_overwritten(self) -> None:
+        """setdefault semantics: pre-existing env var wins over config value."""
+        env = {**_CLEAN_ENV, "LANGCHAIN_PROJECT": "pre-existing"}
+        with patch.dict(os.environ, env, clear=True):
+            TriageAgentConfig(
+                langchain_tracing_v2="true",
+                langchain_project="config-value",
+            )
+            assert os.environ.get("LANGCHAIN_PROJECT") == "pre-existing"

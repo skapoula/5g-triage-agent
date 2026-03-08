@@ -9,6 +9,14 @@ from fastapi.testclient import TestClient
 from triage_agent.api.webhook import app
 
 
+@pytest.fixture(autouse=True)
+def _reset_incident_store() -> None:
+    """Clear the in-memory incident store before every unit test."""
+    from triage_agent.api.webhook import _incident_store
+
+    _incident_store.clear()
+
+
 @pytest.fixture
 def client() -> TestClient:
     """Create a FastAPI test client."""
@@ -315,3 +323,64 @@ def test_health_check_healthy_when_all_ok() -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "healthy"
+
+
+class TestIncidentRoute:
+    """Unit tests for GET /incidents/{incident_id}."""
+
+    def test_unknown_incident_returns_404(self, client: TestClient) -> None:
+        resp = client.get("/incidents/no-such-id")
+        assert resp.status_code == 404
+
+    def test_pending_incident_returns_pending(self, client: TestClient) -> None:
+        """Store entry written as None (pending) before background task fires."""
+        with patch("triage_agent.api.webhook._run_triage"):
+            resp = client.post(
+                "/webhook",
+                json={
+                    "status": "firing",
+                    "alerts": [
+                        {
+                            "status": "firing",
+                            "labels": {
+                                "alertname": "TestAlert",
+                                "severity": "critical",
+                                "namespace": "5g-core",
+                                "nf": "AMF",
+                            },
+                            "annotations": {"summary": "t", "description": "t"},
+                            "startsAt": "2026-03-08T10:00:00Z",
+                        }
+                    ],
+                },
+            )
+        incident_id = resp.json()["incident_id"]
+        poll = client.get(f"/incidents/{incident_id}")
+        assert poll.status_code == 200
+        assert poll.json()["status"] == "pending"
+        assert poll.json()["incident_id"] == incident_id
+
+    def test_complete_incident_returns_report(self, client: TestClient) -> None:
+        """Manually seed a complete report and verify the endpoint returns it."""
+        from triage_agent.api.webhook import _incident_store
+
+        _incident_store["manual-001"] = {
+            "incident_id": "manual-001",
+            "layer": "application",
+            "root_nf": "AMF",
+            "confidence": 0.85,
+        }
+        poll = client.get("/incidents/manual-001")
+        assert poll.status_code == 200
+        data = poll.json()
+        assert data["status"] == "complete"
+        assert data["final_report"]["layer"] == "application"
+
+    def test_failed_incident_returns_failed_status(self, client: TestClient) -> None:
+        from triage_agent.api.webhook import _incident_store
+
+        _incident_store["failed-001"] = {"error": "triage_failed"}
+        poll = client.get("/incidents/failed-001")
+        assert poll.status_code == 200
+        assert poll.json()["status"] == "failed"
+        assert poll.json()["final_report"]["error"] == "triage_failed"

@@ -21,28 +21,28 @@ from triage_agent.state import TriageState
 logger = logging.getLogger(__name__)
 
 KNOWN_DAGS: list[str] = [
-    "registration_general",
-    "authentication_5g_aka",
-    "pdu_session_establishment",
+    "Registration_General",
+    "Authentication_5G_AKA",
+    "PDU_Session_Establishment",
 ]
 
 KEYWORD_MAP: dict[str, list[str]] = {
-    "registration": ["registration_general"],
-    "auth": ["authentication_5g_aka", "registration_general"],
-    "pdu": ["pdu_session_establishment"],
-    "session": ["pdu_session_establishment"],
+    "registration": ["Registration_General"],
+    "auth": ["Authentication_5G_AKA", "Registration_General"],
+    "pdu": ["PDU_Session_Establishment"],
+    "session": ["PDU_Session_Establishment"],
 }
 
 NF_DEFAULT_MAP: dict[str, list[str]] = {
-    "amf":  ["registration_general", "authentication_5g_aka"],
-    "ausf": ["authentication_5g_aka"],
-    "udm":  ["registration_general", "authentication_5g_aka"],
-    "smf":  ["pdu_session_establishment"],
-    "upf":  ["pdu_session_establishment"],
-    "nrf":  ["registration_general"],
-    "pcf":  ["registration_general"],
-    "udr":  ["registration_general"],
-    "nssf": ["registration_general"],
+    "amf":  ["Registration_General", "Authentication_5G_AKA"],
+    "ausf": ["Authentication_5G_AKA"],
+    "udm":  ["Registration_General", "Authentication_5G_AKA"],
+    "smf":  ["PDU_Session_Establishment"],
+    "upf":  ["PDU_Session_Establishment"],
+    "nrf":  ["Registration_General"],
+    "pcf":  ["Registration_General"],
+    "udr":  ["Registration_General"],
+    "nssf": ["Registration_General"],
 }
 
 
@@ -57,10 +57,11 @@ def map_alert_to_procedures(
     labels = alert.get("labels", {})
     annotations = alert.get("annotations", {})
 
-    # 1. exact_match
+    # 1. exact_match — case-insensitive; returns the canonical Memgraph name
     procedure_label = labels.get("procedure", "").strip().lower()
-    if procedure_label in KNOWN_DAGS:
-        return [procedure_label], "exact_match", 1.0
+    for known in KNOWN_DAGS:
+        if procedure_label == known.lower():
+            return [known], "exact_match", 1.0
 
     # 2. keyword_match — scan alertname + description
     search_text = " ".join([

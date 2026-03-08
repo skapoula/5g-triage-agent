@@ -414,47 +414,38 @@ class TestConfidenceThresholdLogic:
             assert result["evidence_gaps"] is not None
 
 
-class TestLLMTimeoutHandling:
-    """Tests for LLM timeout and degraded mode fallback."""
+class TestLLMErrorPropagation:
+    """LLM errors propagate — no silent fallback."""
 
-    def test_llm_timeout_triggers_degraded_mode(
+    def test_llm_timeout_propagates(
         self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
     ) -> None:
-        """LLM timeout should trigger degraded mode fallback."""
+        """TimeoutError from LLM should propagate out of rca_agent_first_attempt."""
+        import pytest
+
         state = sample_initial_state
         state["dag"] = sample_dag
-        state["procedure_name"] = "Registration_General"
-        state["evidence_quality_score"] = 0.75
-        state["infra_score"] = 0.85
-        state["infra_findings"] = {"OOMKilled": True}
 
-        # Mock LLM timeout
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             side_effect=TimeoutError("LLM request timed out"),
-        ):
-            result = rca_agent_first_attempt(state)
+        ), pytest.raises(TimeoutError):
+            rca_agent_first_attempt(state)
 
-            # Should handle timeout gracefully with degraded mode
-            assert result["degraded_mode"] is True
-            assert result["degraded_reason"] is not None
-            assert "timeout" in result["degraded_reason"].lower()
-            # Should still provide analysis via degraded mode
-            assert result["root_nf"] is not None
-            assert result["failure_mode"] is not None
-            assert result["layer"] is not None
-
-    def test_degraded_mode_sets_fallback_analysis(
+    def test_llm_connection_error_propagates(
         self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
     ) -> None:
-        """Degraded mode should use rule-based fallback analysis."""
-        # This test documents the expected behavior when LLM times out:
-        # - degraded_mode = True
-        # - degraded_reason = "LLM timeout after Xs"
-        # - Use deterministic rule-based analysis as fallback
-        # - Set confidence to lower value (e.g., 0.50)
-        # - Still produce root_nf, failure_mode from heuristics
-        pass  # Placeholder for future implementation
+        """ConnectionError from LLM should propagate out of rca_agent_first_attempt."""
+        import pytest
+
+        state = sample_initial_state
+        state["dag"] = sample_dag
+
+        with patch(
+            "triage_agent.agents.rca_agent.llm_analyze_evidence",
+            side_effect=ConnectionError("Cannot connect to LLM"),
+        ), pytest.raises(ConnectionError):
+            rca_agent_first_attempt(state)
 
 
 class TestEvidenceChainCitations:
@@ -749,3 +740,291 @@ def test_rca_prompt_includes_dag_content(monkeypatch):
     assert dag_section_start != -1
     dag_section = captured["prompt"][dag_section_start:dag_section_start+200]
     assert "null" not in dag_section
+
+
+# ---------------------------------------------------------------------------
+# Evidence compression tests
+# ---------------------------------------------------------------------------
+
+class TestCountTokens:
+    """count_tokens: fast 4-char/token approximation."""
+
+    def test_empty_string_returns_one(self) -> None:
+        from triage_agent.agents.rca_agent import count_tokens
+        assert count_tokens("") == 1
+
+    def test_400_char_string_returns_100(self) -> None:
+        from triage_agent.agents.rca_agent import count_tokens
+        assert count_tokens("a" * 400) == 100
+
+    def test_four_char_boundary(self) -> None:
+        from triage_agent.agents.rca_agent import count_tokens
+        assert count_tokens("abcd") == 1
+
+    def test_eight_chars_returns_two(self) -> None:
+        from triage_agent.agents.rca_agent import count_tokens
+        assert count_tokens("abcdefgh") == 2
+
+
+class TestCompressInfraFindings:
+    """compress_infra_findings: priority-ordered budget-aware compression."""
+
+    def test_none_input_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_infra_findings
+        assert compress_infra_findings(None, 500) == {}
+
+    def test_empty_dict_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_infra_findings
+        assert compress_infra_findings({}, 500) == {}
+
+    def test_within_budget_returned_unchanged(self) -> None:
+        from triage_agent.agents.rca_agent import compress_infra_findings
+        findings = {"critical_events": ["OOMKilled"], "concurrent_failures": 1}
+        result = compress_infra_findings(findings, 10000)
+        assert result == findings
+
+    def test_node_health_dropped_on_tight_budget(self) -> None:
+        from triage_agent.agents.rca_agent import compress_infra_findings
+        large_node_health = {"node-" + str(i): {"cpu": 0.5, "mem": 0.6} for i in range(50)}
+        findings = {
+            "critical_events": ["OOMKilled"],
+            "concurrent_failures": 2,
+            "node_health": large_node_health,
+        }
+        # Tight budget — node_health is lowest priority and should be dropped
+        result = compress_infra_findings(findings, 50)
+        assert "critical_events" in result
+        assert "node_health" not in result
+
+    def test_zero_restart_pods_filtered_out(self) -> None:
+        from triage_agent.agents.rca_agent import compress_infra_findings
+        findings = {
+            "pod_restarts": {"amf-pod": 3, "smf-pod": 0, "ausf-pod": 1},
+        }
+        result = compress_infra_findings(findings, 10000)
+        assert result["pod_restarts"]["amf-pod"] == 3
+        assert result["pod_restarts"]["ausf-pod"] == 1
+        assert "smf-pod" not in result["pod_restarts"]
+
+
+class TestCompressLogs:
+    """compress_logs: priority-scored, budget-capped log compression."""
+
+    def test_none_input_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_logs
+        assert compress_logs(None, 500) == {}
+
+    def test_empty_dict_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_logs
+        assert compress_logs({}, 500) == {}
+
+    def test_within_budget_returned_structurally_equivalent(self) -> None:
+        from triage_agent.agents.rca_agent import compress_logs
+        logs = {
+            "AMF": [{"level": "ERROR", "message": "auth failed", "timestamp": 1000,
+                      "matched_phase": None, "matched_pattern": None}]
+        }
+        result = compress_logs(logs, 10000)
+        assert "AMF" in result
+        assert len(result["AMF"]) == 1
+
+    def test_dag_matched_logs_kept_over_unmatched_on_tight_budget(self) -> None:
+        from triage_agent.agents.rca_agent import compress_logs, count_tokens
+        logs = {
+            "AMF": [
+                {"level": "WARN", "message": "generic warn", "timestamp": 999,
+                 "matched_phase": None, "matched_pattern": None},
+                {"level": "INFO", "message": "dag matched entry", "timestamp": 1000,
+                 "matched_phase": "phase_1", "matched_pattern": "*auth*"},
+            ]
+        }
+        import json
+        # Budget fits exactly one entry (the smaller one); dag-matched should win
+        one_entry_tokens = count_tokens(json.dumps(
+            {"AMF": [{"level": "INFO", "message": "dag matched entry", "timestamp": 1000,
+                      "matched_phase": "phase_1", "matched_pattern": "*auth*"}]}
+        ))
+        result = compress_logs(logs, one_entry_tokens)
+        amf_msgs = [e["message"] for e in result.get("AMF", [])]
+        assert "dag matched entry" in amf_msgs
+
+    def test_error_logs_kept_over_warn_on_tight_budget(self) -> None:
+        from triage_agent.agents.rca_agent import compress_logs, count_tokens
+        logs = {
+            "AMF": [
+                {"level": "WARN", "message": "warn msg", "timestamp": 1000,
+                 "matched_phase": None, "matched_pattern": None},
+                {"level": "ERROR", "message": "error msg", "timestamp": 1001,
+                 "matched_phase": None, "matched_pattern": None},
+            ]
+        }
+        import json
+        one_entry_tokens = count_tokens(json.dumps(
+            {"AMF": [{"level": "ERROR", "message": "error msg", "timestamp": 1001,
+                      "matched_phase": None, "matched_pattern": None}]}
+        ))
+        result = compress_logs(logs, one_entry_tokens)
+        amf_msgs = [e["message"] for e in result.get("AMF", [])]
+        assert "error msg" in amf_msgs
+
+    def test_message_truncated_at_max_chars(self) -> None:
+        from triage_agent.agents.rca_agent import compress_logs
+        long_msg = "x" * 500
+        logs = {
+            "AMF": [{"level": "ERROR", "message": long_msg, "timestamp": 1000,
+                     "matched_phase": None, "matched_pattern": None}]
+        }
+        result = compress_logs(logs, 10000)
+        entry = result["AMF"][0]
+        assert len(entry["message"]) <= 203  # 200 chars + "[…]"
+        assert entry["message"].endswith("[…]")
+
+
+class TestCompressMetrics:
+    """compress_metrics: collapse raw Prometheus format to NF summary dicts."""
+
+    def test_none_input_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_metrics
+        assert compress_metrics(None, 500) == {}
+
+    def test_empty_dict_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_metrics
+        assert compress_metrics({}, 500) == {}
+
+    def test_within_budget_returned_unchanged(self) -> None:
+        from triage_agent.agents.rca_agent import compress_metrics
+        metrics = {"AMF": {"error_rate": 0.05, "p95_latency_ms": 120.0}}
+        result = compress_metrics(metrics, 10000)
+        assert result == metrics
+
+    def test_prometheus_vector_format_compacted_to_summary(self) -> None:
+        from triage_agent.agents.rca_agent import compress_metrics
+        # Raw Prometheus vector format: list of {metric: {labels}, value: [ts, str]}
+        metrics = {
+            "AMF": [
+                {"metric": {"report": "error_rate"}, "value": [1000, "0.05"]},
+                {"metric": {"report": "p95_latency_ms"}, "value": [1000, "120.5"]},
+            ]
+        }
+        result = compress_metrics(metrics, 10000)
+        assert "AMF" in result
+        assert isinstance(result["AMF"], dict)
+
+    def test_nf_dropped_when_over_budget(self) -> None:
+        from triage_agent.agents.rca_agent import compress_metrics
+        # Build a metrics dict that is large
+        big_metrics = {f"NF_{i}": {"error_rate": 0.01, "data": "x" * 200} for i in range(30)}
+        result = compress_metrics(big_metrics, 100)
+        # Result must fit in budget
+        import json
+        assert len(json.dumps(result)) <= 500  # generous check: budget*4 chars
+
+
+class TestCompressDag:
+    """compress_dag: progressively strips then truncates DAG phases."""
+
+    def test_none_input_returns_empty_list(self) -> None:
+        from triage_agent.agents.rca_agent import compress_dag
+        assert compress_dag(None, 800) == []
+
+    def test_empty_list_returns_empty_list(self) -> None:
+        from triage_agent.agents.rca_agent import compress_dag
+        assert compress_dag([], 800) == []
+
+    def test_small_dag_returned_unchanged(self) -> None:
+        from triage_agent.agents.rca_agent import compress_dag
+        dags = [{"name": "reg", "phases": [{"order": 1, "action": "req"}], "all_nfs": ["AMF"]}]
+        result = compress_dag(dags, 10000)
+        assert result == dags
+
+    def test_keywords_stripped_when_over_budget(self) -> None:
+        from triage_agent.agents.rca_agent import compress_dag
+        big_keywords = ["keyword_" + str(i) for i in range(100)]
+        dags = [{"name": "reg", "all_nfs": ["AMF"], "phases": [
+            {"order": i, "action": f"step {i}", "keywords": big_keywords, "failure_patterns": []}
+            for i in range(20)
+        ]}]
+        # Use a budget that is tight relative to the full DAG
+        import json
+        full_size = len(json.dumps(dags)) // 4
+        result = compress_dag(dags, full_size // 2)
+        # keywords should be removed from at least some phases
+        has_keywords = any("keywords" in p for d in result for p in d.get("phases", []))
+        assert not has_keywords
+
+    def test_failure_pattern_phases_kept_on_extreme_budget(self) -> None:
+
+        from triage_agent.agents.rca_agent import compress_dag
+        dags = [{"name": "reg", "all_nfs": ["AMF"], "phases": [
+            {"order": 1, "action": "start", "failure_patterns": []},
+            {"order": 2, "action": "auth", "failure_patterns": ["*auth*fail*"]},
+            {"order": 3, "action": "accept", "failure_patterns": ["*reject*"]},
+        ]}]
+        result = compress_dag(dags, 30)  # Very tight budget
+        if result and result[0].get("phases"):
+            phases_with_fp = [p for p in result[0]["phases"] if p.get("failure_patterns")]
+            # Phases with failure_patterns should survive if any phases remain
+            assert len(phases_with_fp) > 0
+
+
+class TestCompressTraceDeviations:
+    """compress_trace_deviations: per-DAG slice and budget enforcement."""
+
+    def test_none_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_trace_deviations
+        assert compress_trace_deviations(None, 500) == {}
+
+    def test_empty_dict_returns_empty_dict(self) -> None:
+        from triage_agent.agents.rca_agent import compress_trace_deviations
+        assert compress_trace_deviations({}, 500) == {}
+
+    def test_within_budget_returned_unchanged(self) -> None:
+        from triage_agent.agents.rca_agent import compress_trace_deviations
+        devs = {"reg": [{"deviation_point": 1, "expected": "A", "actual": "B"}]}
+        result = compress_trace_deviations(devs, 10000)
+        assert result == devs
+
+    def test_truncated_to_max_deviations_per_dag(self) -> None:
+        from triage_agent.agents.rca_agent import compress_trace_deviations
+        devs = {"reg": [{"deviation_point": i} for i in range(10)]}
+        result = compress_trace_deviations(devs, 10000)
+        # Default cfg.rca_max_deviations_per_dag = 3
+        assert len(result["reg"]) <= 3
+
+    def test_dag_with_no_deviations_dropped_when_over_budget(self) -> None:
+        import json
+
+        from triage_agent.agents.rca_agent import compress_trace_deviations
+        devs = {
+            "empty_dag": [],
+            "active_dag": [{"deviation_point": i, "data": "x" * 100} for i in range(3)],
+        }
+        # Make budget tight so empty_dag gets dropped
+        active_size = len(json.dumps({"active_dag": devs["active_dag"]})) // 4
+        result = compress_trace_deviations(devs, active_size)
+        assert "empty_dag" not in result
+
+
+class TestCompressEvidence:
+    """compress_evidence: top-level orchestrator returns all 5 prompt sections."""
+
+    def test_returns_all_required_keys(self, sample_initial_state: TriageState) -> None:
+        from triage_agent.agents.rca_agent import compress_evidence
+        result = compress_evidence(sample_initial_state)
+        required = {
+            "infra_findings_json",
+            "dag_json",
+            "metrics_formatted",
+            "logs_formatted",
+            "trace_deviations_formatted",
+        }
+        assert required.issubset(result.keys())
+
+    def test_empty_state_returns_no_data_strings(
+        self, sample_initial_state: TriageState
+    ) -> None:
+        from triage_agent.agents.rca_agent import compress_evidence
+        result = compress_evidence(sample_initial_state)
+        assert result["metrics_formatted"] == "No metrics available."
+        assert result["logs_formatted"] == "No logs available."
+        assert result["trace_deviations_formatted"] == "No UE trace deviations available."

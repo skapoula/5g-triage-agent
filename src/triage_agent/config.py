@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -169,7 +169,7 @@ class TriageAgentConfig(BaseSettings):
     pod_pending_factor: float = 0.6
 
     # --- RCA layer determination thresholds ---
-    # Used in LLM system prompt AND degraded_mode_analysis() fallback.
+    # Used in LLM system prompt.
     # infra_score >= this → infrastructure root cause.
     infra_root_cause_threshold: float = 0.80
     # infra_score >= this → possible infrastructure-triggered application failure.
@@ -177,12 +177,19 @@ class TriageAgentConfig(BaseSettings):
     # infra_score < this → likely pure application failure.
     app_only_threshold: float = 0.30
 
-    # --- Degraded mode confidence values ---
-    # Lower than normal LLM output to signal reduced reliability.
-    degraded_conf_infra_generic: float = 0.50
-    degraded_conf_infra_specific: float = 0.60   # OOMKilled / CrashLoopBackOff
-    degraded_conf_app_unknown: float = 0.40
-    degraded_conf_app_pattern_match: float = 0.50  # timeout / auth-failure keyword
+    # --- Evidence compression token budgets ---
+    # Token budget per evidence section (1 token ≈ 4 chars).
+    # Total target: ~3500 tokens for all evidence sections combined,
+    # leaving room for the prompt template (~400 tokens) and LLM response.
+    rca_token_budget_infra: int = 400
+    rca_token_budget_dag: int = 800
+    rca_token_budget_metrics: int = 500
+    rca_token_budget_logs: int = 1300
+    rca_token_budget_traces: int = 500
+    # Max chars per individual log message before truncation.
+    rca_log_max_message_chars: int = 200
+    # Max trace deviations per DAG name before truncation.
+    rca_max_deviations_per_dag: int = 3
 
     # --- Evidence gap thresholds ---
     # Evidence quality below this → "Overall evidence quality too low" gap.
@@ -208,6 +215,13 @@ class TriageAgentConfig(BaseSettings):
     langsmith_project: str = "5g-triage-agent"
     langsmith_api_key: str = ""
 
+    # Set LANGCHAIN_TRACING_V2=true (via env or .env) to enable LangSmith.
+    # When enabled, LANGCHAIN_PROJECT and LANGSMITH_API_KEY are wired into
+    # the environment so that @traceable decorators on all agents are active.
+    langchain_tracing_v2: str = "false"
+    langchain_project: str = "5g-triage-agent"
+    langchain_endpoint: str = "https://api.smith.langchain.com"
+
     # Application version returned in API metadata endpoints.
     # Should match pyproject.toml; update on each release.
     app_version: str = "3.2.0"
@@ -219,6 +233,19 @@ class TriageAgentConfig(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",            # ignore unknown keys in .env file
     }
+
+    @model_validator(mode="after")
+    def _configure_langsmith(self) -> "TriageAgentConfig":
+        """Wire LangSmith env vars when tracing is enabled."""
+        import os  # noqa: PLC0415
+
+        if self.langchain_tracing_v2.lower() == "true":
+            os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+            os.environ.setdefault("LANGCHAIN_PROJECT", self.langchain_project)
+            os.environ.setdefault("LANGCHAIN_ENDPOINT", self.langchain_endpoint)
+            if self.langsmith_api_key:
+                os.environ.setdefault("LANGSMITH_API_KEY", self.langsmith_api_key)
+        return self
 
     @field_validator("memgraph_port")
     @classmethod

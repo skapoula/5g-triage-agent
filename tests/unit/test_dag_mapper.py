@@ -17,17 +17,17 @@ class TestMapAlertToProcedures:
         from triage_agent.agents.dag_mapper import map_alert_to_procedures
 
         alert = {
-            "labels": {"procedure": "registration_general", "nf": "amf"},
+            "labels": {"procedure": "Registration_General", "nf": "amf"},
             "annotations": {},
         }
         dag_names, method, confidence = map_alert_to_procedures(alert)
 
-        assert dag_names == ["registration_general"]
+        assert dag_names == ["Registration_General"]
         assert method == "exact_match"
         assert confidence == pytest.approx(1.0)
 
     def test_keyword_match_registration_in_alertname(self) -> None:
-        """'registration' in alertname → keyword_match for registration_general."""
+        """'registration' in alertname → keyword_match for Registration_General."""
         from triage_agent.agents.dag_mapper import map_alert_to_procedures
 
         alert = {
@@ -36,12 +36,12 @@ class TestMapAlertToProcedures:
         }
         dag_names, method, confidence = map_alert_to_procedures(alert)
 
-        assert "registration_general" in dag_names
+        assert "Registration_General" in dag_names
         assert method == "keyword_match"
         assert confidence == pytest.approx(0.8)
 
     def test_keyword_match_auth_in_description(self) -> None:
-        """'auth' in description → keyword_match for authentication_5g_aka."""
+        """'auth' in description → keyword_match for Authentication_5G_AKA."""
         from triage_agent.agents.dag_mapper import map_alert_to_procedures
 
         alert = {
@@ -50,7 +50,7 @@ class TestMapAlertToProcedures:
         }
         dag_names, method, confidence = map_alert_to_procedures(alert)
 
-        assert "authentication_5g_aka" in dag_names
+        assert "Authentication_5G_AKA" in dag_names
         assert method == "keyword_match"
 
     def test_nf_default_amf(self) -> None:
@@ -63,12 +63,12 @@ class TestMapAlertToProcedures:
         }
         dag_names, method, confidence = map_alert_to_procedures(alert)
 
-        assert set(dag_names) == {"registration_general", "authentication_5g_aka"}
+        assert set(dag_names) == {"Registration_General", "Authentication_5G_AKA"}
         assert method == "nf_default"
         assert confidence == pytest.approx(0.6)
 
     def test_nf_default_smf(self) -> None:
-        """SMF alert → nf_default returns pdu_session_establishment only."""
+        """SMF alert → nf_default returns PDU_Session_Establishment only."""
         from triage_agent.agents.dag_mapper import map_alert_to_procedures
 
         alert = {
@@ -77,7 +77,7 @@ class TestMapAlertToProcedures:
         }
         dag_names, method, confidence = map_alert_to_procedures(alert)
 
-        assert dag_names == ["pdu_session_establishment"]
+        assert dag_names == ["PDU_Session_Establishment"]
         assert method == "nf_default"
 
     def test_generic_fallback_unknown_nf_no_keywords(self) -> None:
@@ -90,7 +90,7 @@ class TestMapAlertToProcedures:
         }
         dag_names, method, confidence = map_alert_to_procedures(alert)
 
-        assert set(dag_names) == {"registration_general", "authentication_5g_aka", "pdu_session_establishment"}
+        assert set(dag_names) == {"Registration_General", "Authentication_5G_AKA", "PDU_Session_Establishment"}
         assert method == "generic_fallback"
         assert confidence == pytest.approx(0.3)
 
@@ -158,8 +158,6 @@ class TestDagMapperAgent:
             layer="",
             confidence=0.0,
             evidence_chain=[],
-            degraded_mode=False,
-            degraded_reason=None,
             attempt_count=1,
             max_attempts=2,
             needs_more_evidence=False,
@@ -173,7 +171,7 @@ class TestDagMapperAgent:
         from triage_agent.agents.dag_mapper import dag_mapper
 
         mock_memgraph.load_reference_dag.return_value = {
-            "name": "registration_general",
+            "name": "Registration_General",
             "procedure": "registration",
             "all_nfs": ["AMF", "AUSF"],
             "phases": [],

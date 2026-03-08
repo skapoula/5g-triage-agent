@@ -6,6 +6,7 @@ Produces root_nf, failure_mode, confidence, evidence_chain.
 """
 
 import json
+import logging
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -15,6 +16,8 @@ from pydantic import BaseModel, Field, SecretStr
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
+
+logger = logging.getLogger(__name__)
 
 # --- Pydantic Models ---
 
@@ -148,6 +151,289 @@ def format_trace_deviations_for_prompt(deviations: dict[str, list[dict[str, Any]
     if not deviations:
         return "No UE trace deviations available."
     return json.dumps(deviations, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Evidence compression — keeps all evidence within LLM context budget
+# ---------------------------------------------------------------------------
+
+
+def count_tokens(text: str) -> int:
+    """Approximate token count using 4-chars-per-token heuristic."""
+    return max(1, len(text) // 4)
+
+
+def compress_infra_findings(
+    infra_findings: dict[str, Any] | None,
+    token_budget: int,
+) -> dict[str, Any]:
+    """Reduce infra_findings to the most RCA-relevant fields within budget.
+
+    Priority order (highest first):
+        critical_events → concurrent_failures → oom_kills →
+        pod_restarts (non-zero only) → resource_usage → node_health (dropped first)
+    """
+    if not infra_findings:
+        return {}
+
+    priority_keys = [
+        "critical_events",
+        "concurrent_failures",
+        "oom_kills",
+        "pod_restarts",
+        "resource_usage",
+    ]
+
+    result: dict[str, Any] = {}
+
+    # Handle pod_restarts specially: filter out zero-restart pods
+    findings = dict(infra_findings)
+    if "pod_restarts" in findings and isinstance(findings["pod_restarts"], dict):
+        findings["pod_restarts"] = {
+            pod: count
+            for pod, count in findings["pod_restarts"].items()
+            if count > 0
+        }
+
+    # Add priority fields in order, stopping if budget exceeded
+    for key in priority_keys:
+        if key not in findings:
+            continue
+        candidate = {**result, key: findings[key]}
+        if count_tokens(json.dumps(candidate)) <= token_budget:
+            result = candidate
+
+    return result
+
+
+def compress_metrics(
+    metrics: dict[str, Any] | None,
+    token_budget: int,
+) -> dict[str, Any]:
+    """Compress metrics to fit within token_budget.
+
+    If the metrics are already a compact summary dict (not raw Prometheus format),
+    they are returned as-is (or with NFs dropped) to fit the budget.
+
+    Raw Prometheus format (list of {metric: {labels}, value: [ts, str]}) is
+    compacted to {NF: {report_label: float}} summary dicts.
+    """
+    if not metrics:
+        return {}
+
+    def _compact_nf(entries: Any) -> Any:
+        """Collapse a list of Prometheus vector entries to a summary dict."""
+        if not isinstance(entries, list):
+            return entries
+        summary: dict[str, float] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            metric_labels = entry.get("metric", {})
+            value_pair = entry.get("value", [None, None])
+            report_key = metric_labels.get("report", "")
+            try:
+                val = float(value_pair[1]) if len(value_pair) > 1 else 0.0
+            except (TypeError, ValueError):
+                val = 0.0
+            if report_key:
+                summary[report_key] = val
+        return summary if summary else entries
+
+    compacted = {nf: _compact_nf(data) for nf, data in metrics.items()}
+
+    if count_tokens(json.dumps(compacted)) <= token_budget:
+        return compacted
+
+    # Drop NFs one by one (from the end) until within budget
+    nf_names = list(compacted.keys())
+    while nf_names and count_tokens(json.dumps({k: compacted[k] for k in nf_names})) > token_budget:
+        nf_names.pop()
+
+    return {k: compacted[k] for k in nf_names}
+
+
+def compress_logs(
+    logs: dict[str, Any] | None,
+    token_budget: int,
+) -> dict[str, Any]:
+    """Compress logs to fit within token_budget.
+
+    Entries are scored by priority:
+        1 = DAG-matched (matched_phase + matched_pattern set)
+        2 = DAG phase matched only
+        3 = ERROR or FATAL level
+        4 = WARN level
+        5 = everything else (dropped first)
+
+    Messages longer than cfg.rca_log_max_message_chars are truncated.
+    """
+    if not logs:
+        return {}
+
+    cfg = get_config()
+    max_msg = cfg.rca_log_max_message_chars
+
+    def _priority(entry: dict[str, Any]) -> int:
+        if entry.get("matched_phase") and entry.get("matched_pattern"):
+            return 1
+        if entry.get("matched_phase"):
+            return 2
+        level = str(entry.get("level", "")).upper()
+        if level in ("ERROR", "FATAL"):
+            return 3
+        if level == "WARN":
+            return 4
+        return 5
+
+    def _truncate(entry: dict[str, Any]) -> dict[str, Any]:
+        msg = str(entry.get("message", ""))
+        if len(msg) > max_msg:
+            entry = {**entry, "message": msg[:max_msg] + "[…]"}
+        return entry
+
+    # Flatten all entries with their NF name attached, sorted by priority then recency
+    flat: list[tuple[int, str, dict[str, Any]]] = []
+    for nf, entries in logs.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            flat.append((_priority(entry), nf, _truncate(entry)))
+
+    flat.sort(key=lambda x: (x[0], -x[2].get("timestamp", 0)))
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for _prio, nf, entry in flat:
+        candidate = {**result, nf: result.get(nf, []) + [entry]}
+        if count_tokens(json.dumps(candidate)) > token_budget:
+            break
+        result = candidate
+
+    return result
+
+
+def compress_dag(
+    dags: list[dict[str, Any]] | None,
+    token_budget: int,
+) -> list[dict[str, Any]]:
+    """Compress DAG structures to fit within token_budget.
+
+    Stripping cascade (each step checked against budget):
+        1. Return as-is if within budget.
+        2. Strip 'keywords' and 'success_log' from all phases.
+        3. Keep only phases that have non-empty 'failure_patterns'.
+        4. Truncate phases per DAG (always keep first + last phases).
+    """
+    if not dags:
+        return []
+
+    def _fits(d: list[dict[str, Any]]) -> bool:
+        return count_tokens(json.dumps(d)) <= token_budget
+
+    if _fits(dags):
+        return dags
+
+    # Step 2: strip keywords and success_log
+    stripped: list[dict[str, Any]] = []
+    for dag in dags:
+        phases = [
+            {k: v for k, v in phase.items() if k not in ("keywords", "success_log")}
+            for phase in dag.get("phases", [])
+        ]
+        stripped.append({**dag, "phases": phases})
+
+    if _fits(stripped):
+        return stripped
+
+    # Step 3: keep only phases with failure_patterns
+    fp_only: list[dict[str, Any]] = []
+    for dag in stripped:
+        phases = [p for p in dag.get("phases", []) if p.get("failure_patterns")]
+        fp_only.append({**dag, "phases": phases})
+
+    if _fits(fp_only):
+        return fp_only
+
+    # Step 4: truncate phases, always keeping first and last
+    result = fp_only
+    for max_phases in range(len(max((d.get("phases", []) for d in result), key=len, default=[])), 0, -1):
+        truncated = []
+        for dag in result:
+            phases = dag.get("phases", [])
+            if len(phases) > max_phases:
+                keep = [phases[0]] if phases else []
+                middle = phases[1:-1][:max(0, max_phases - 2)]
+                last = [phases[-1]] if len(phases) > 1 else []
+                phases = keep + middle + last
+            truncated.append({**dag, "phases": phases})
+        if _fits(truncated):
+            logger.warning("DAG compressed: truncated to %d phases per DAG", max_phases)
+            return truncated
+
+    return result
+
+
+def compress_trace_deviations(
+    deviations: dict[str, list[dict[str, Any]]] | None,
+    token_budget: int,
+) -> dict[str, list[dict[str, Any]]]:
+    """Compress trace deviations to fit within token_budget.
+
+    Slices each DAG's deviation list to cfg.rca_max_deviations_per_dag,
+    then drops DAGs with empty lists if still over budget.
+    """
+    if not deviations:
+        return {}
+
+    cfg = get_config()
+    max_per_dag = cfg.rca_max_deviations_per_dag
+
+    sliced = {dag: devs[:max_per_dag] for dag, devs in deviations.items()}
+
+    if count_tokens(json.dumps(sliced)) <= token_budget:
+        return sliced
+
+    # Drop empty DAGs first
+    non_empty = {dag: devs for dag, devs in sliced.items() if devs}
+    if count_tokens(json.dumps(non_empty)) <= token_budget:
+        return non_empty
+
+    # Drop DAGs with fewest deviations until within budget
+    dag_names = sorted(non_empty.keys(), key=lambda d: len(non_empty[d]))
+    while dag_names and count_tokens(json.dumps({d: non_empty[d] for d in dag_names})) > token_budget:
+        dag_names.pop(0)
+
+    return {d: non_empty[d] for d in dag_names}
+
+
+def compress_evidence(state: "TriageState") -> dict[str, str]:
+    """Compress all evidence sections to fit within per-section token budgets.
+
+    Returns a dict of pre-formatted strings keyed by RCA_PROMPT_TEMPLATE placeholders.
+    """
+    cfg = get_config()
+    compressed_infra = compress_infra_findings(
+        state.get("infra_findings"), cfg.rca_token_budget_infra
+    )
+    compressed_dags = compress_dag(
+        state.get("dags"), cfg.rca_token_budget_dag
+    )
+    compressed_metrics = compress_metrics(
+        state.get("metrics"), cfg.rca_token_budget_metrics
+    )
+    compressed_logs = compress_logs(
+        state.get("logs"), cfg.rca_token_budget_logs
+    )
+    compressed_traces = compress_trace_deviations(
+        state.get("trace_deviations"), cfg.rca_token_budget_traces
+    )
+    return {
+        "infra_findings_json": json.dumps(compressed_infra, indent=2),
+        "dag_json": json.dumps(compressed_dags, indent=2),
+        "metrics_formatted": format_metrics_for_prompt(compressed_metrics),
+        "logs_formatted": format_logs_for_prompt(compressed_logs),
+        "trace_deviations_formatted": format_trace_deviations_for_prompt(compressed_traces),
+    }
 
 
 def create_llm(
@@ -303,7 +589,6 @@ def generate_final_report(state: TriageState) -> dict[str, Any]:
         ),
         "infra_score": state.get("infra_score", 0.0),
         "evidence_quality_score": state.get("evidence_quality_score", 0.0),
-        "degraded_mode": state.get("degraded_mode", False),
     }
 
 
@@ -345,118 +630,33 @@ def identify_evidence_gaps(state: TriageState) -> list[str]:
     return gaps
 
 
-def degraded_mode_analysis(state: TriageState) -> dict[str, Any]:
-    """Rule-based fallback analysis when LLM times out.
-
-    Uses heuristics to provide basic RCA without LLM.
-
-    Args:
-        state: Current triage state
-
-    Returns:
-        Analysis dict with lower confidence scores
-    """
-    cfg = get_config()
-    # Heuristic: High infra_score -> infrastructure layer
-    infra_score = state.get("infra_score", 0.0)
-
-    if infra_score >= cfg.infra_root_cause_threshold:
-        # Infrastructure root cause
-        root_nf = "pod-level"
-        failure_mode = "infrastructure_issue"
-        layer = "infrastructure"
-        confidence = cfg.degraded_conf_infra_generic
-
-        # Try to extract specifics from infra_findings
-        infra_findings = state.get("infra_findings")
-        if infra_findings and isinstance(infra_findings, dict):
-            if "OOMKilled" in str(infra_findings):
-                failure_mode = "OOMKilled"
-                confidence = cfg.degraded_conf_infra_specific
-            elif "CrashLoop" in str(infra_findings):
-                failure_mode = "CrashLoopBackOff"
-                confidence = cfg.degraded_conf_infra_specific
-
-    else:
-        # Application layer - try to extract from logs
-        layer = "application"
-        root_nf = "unknown"
-        failure_mode = "undetermined"
-        confidence = cfg.degraded_conf_app_unknown
-
-        logs = state.get("logs")
-        if logs and isinstance(logs, dict):
-            # Simple keyword matching
-            for nf_name, log_entries in logs.items():
-                if isinstance(log_entries, list) and log_entries:
-                    for entry in log_entries:
-                        message = str(entry.get("message", "")).lower()
-                        if "timeout" in message:
-                            root_nf = nf_name
-                            failure_mode = "timeout"
-                            confidence = cfg.degraded_conf_app_pattern_match
-                            break
-                        elif "auth" in message and "fail" in message:
-                            root_nf = nf_name
-                            failure_mode = "authentication_failure"
-                            confidence = cfg.degraded_conf_app_pattern_match
-                            break
-                if root_nf != "unknown":
-                    break
-
-    return {
-        "layer": layer,
-        "root_nf": root_nf,
-        "failure_mode": failure_mode,
-        "confidence": confidence,
-        "evidence_chain": [],
-        "alternative_hypotheses": [],
-        "reasoning": "Degraded mode: rule-based analysis due to LLM timeout",
-    }
-
-
 @traceable(name="rca_agent_first_attempt")
 def rca_agent_first_attempt(state: TriageState) -> TriageState:
     """RCAAgent first attempt. Uses LLM for analysis.
 
-    Handles LLM timeout with degraded mode fallback.
+    Evidence is compressed to fit within the LLM's context window before
+    the prompt is built.
 
     Args:
         state: Current triage state with all evidence collected
 
     Returns:
-        Updated state with RCA results
+        Delta dict with RCA results for LangGraph state merge
     """
     _cfg = get_config()
+    evidence = compress_evidence(state)
     prompt = RCA_PROMPT_TEMPLATE.format(
         procedure_name=", ".join(state.get("procedure_names") or ["unknown"]),
         infra_score=state.get("infra_score", 0.0),
-        infra_findings_json=json.dumps(state.get("infra_findings"), indent=2),
-        dag_json=json.dumps(state.get("dags"), indent=2),
         time_window="alert_time - 5min to alert_time + 60s",
-        metrics_formatted=format_metrics_for_prompt(state.get("metrics")),
-        logs_formatted=format_logs_for_prompt(state.get("logs")),
-        trace_deviations_formatted=format_trace_deviations_for_prompt(
-            state.get("trace_deviations")
-        ),
         evidence_quality_score=state.get("evidence_quality_score", 0.0),
         infra_root_cause_threshold=_cfg.infra_root_cause_threshold,
         infra_triggered_threshold=_cfg.infra_triggered_threshold,
         app_only_threshold=_cfg.app_only_threshold,
+        **evidence,
     )
 
-    # Try LLM analysis with timeout handling
-    try:
-        analysis = llm_analyze_evidence(prompt)
-        state["degraded_mode"] = False
-        state["degraded_reason"] = None
-
-    except TimeoutError:
-        # LLM timed out - use degraded mode
-        config = get_config()
-        state["degraded_mode"] = True
-        state["degraded_reason"] = f"LLM timeout after {config.llm_timeout}s"
-        analysis = degraded_mode_analysis(state)
+    analysis = llm_analyze_evidence(prompt)
 
     # Update state with analysis results
     state["root_nf"] = analysis["root_nf"]
@@ -479,7 +679,16 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
         state["evidence_gaps"] = identify_evidence_gaps(state)
 
     # Mark second attempt complete if this was a retry
-    if state.get("attempt_count", 1) > 1:
-        state["second_attempt_complete"] = True
+    second_attempt_complete = state.get("attempt_count", 1) > 1
 
-    return state
+    return {
+        "root_nf": state["root_nf"],
+        "failure_mode": state["failure_mode"],
+        "confidence": state["confidence"],
+        "evidence_chain": state.get("evidence_chain", []),
+        "layer": state["layer"],
+        "needs_more_evidence": state["needs_more_evidence"],
+        "evidence_gaps": state.get("evidence_gaps"),
+        "second_attempt_complete": second_attempt_complete,
+        "final_report": state.get("final_report"),
+    }

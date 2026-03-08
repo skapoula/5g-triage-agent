@@ -35,8 +35,6 @@ class TriageState(TypedDict):
     layer: str  # "infrastructure" or "application"
     confidence: float
     evidence_chain: list[dict]
-    degraded_mode: bool  # True if LLM timeout triggered degraded mode
-    degraded_reason: str | None  # Reason for degraded mode
 
     # Control flow
     attempt_count: int  # Current attempt (1-based)

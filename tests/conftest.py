@@ -159,8 +159,6 @@ def sample_initial_state(sample_alert: dict[str, Any]) -> TriageState:
         layer="",
         confidence=0.0,
         evidence_chain=[],
-        degraded_mode=False,
-        degraded_reason=None,
         attempt_count=1,
         max_attempts=2,
         needs_more_evidence=False,

@@ -111,8 +111,6 @@ def verify_metrics_agent_integration() -> bool:
         "layer": "application",
         "confidence": 0.0,
         "evidence_chain": [],
-        "degraded_mode": False,
-        "degraded_reason": None,
         "attempt_count": 1,
         "max_attempts": 2,
         "needs_more_evidence": False,
