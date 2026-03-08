@@ -174,24 +174,22 @@ class TestCreateWorkflow:
         assert ("metrics_agent", "logs_agent") not in edge_pairs
         assert ("logs_agent", "traces_agent") not in edge_pairs
 
-    def test_rca_agent_has_single_incoming_edge(self) -> None:
-        """rca_agent pipeline entry must come from evidence_quality.
-
-        The retry loop (increment_attempt → rca_agent) is expected; the only other
-        source must be evidence_quality (not join_for_rca, infra_agent, etc.).
-        """
-        graph = create_workflow().get_graph()
-        rca_incoming_sources = {e.source for e in graph.edges if e.target == "rca_agent"}
-        pipeline_sources = rca_incoming_sources - {"increment_attempt"}
-        assert pipeline_sources == {"evidence_quality"}, (
-            f"rca_agent pipeline sources are {pipeline_sources} — expected exactly {{'evidence_quality'}}. "
-            f"All incoming sources: {rca_incoming_sources}"
-        )
-
-    def test_join_for_rca_node_not_in_graph(self) -> None:
-        """join_for_rca is removed — evidence_quality connects directly to rca_agent."""
+    def test_join_for_rca_is_barrier_node(self) -> None:
+        """join_for_rca is in the graph and has edges from both infra_agent and evidence_quality."""
         graph = create_workflow().get_graph()
         node_names = list(graph.nodes)
-        assert "join_for_rca" not in node_names, (
-            f"join_for_rca should not be in the graph. Nodes: {node_names}"
+        assert "join_for_rca" in node_names
+
+        edge_pairs = [(e.source, e.target) for e in graph.edges]
+        assert ("infra_agent", "join_for_rca") in edge_pairs
+        assert ("evidence_quality", "join_for_rca") in edge_pairs
+        assert ("join_for_rca", "rca_agent") in edge_pairs
+
+    def test_rca_agent_entry_is_join_for_rca(self) -> None:
+        """rca_agent's only pipeline entry point is join_for_rca (not evidence_quality directly)."""
+        graph = create_workflow().get_graph()
+        rca_incoming = {e.source for e in graph.edges if e.target == "rca_agent"}
+        pipeline_sources = rca_incoming - {"increment_attempt"}
+        assert pipeline_sources == {"join_for_rca"}, (
+            f"rca_agent pipeline sources: {pipeline_sources}, expected exactly {{'join_for_rca'}}"
         )

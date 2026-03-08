@@ -5,9 +5,9 @@ triage pipeline. The workflow coordinates specialized agents to investigate
 5G core network failures and produce root cause analysis.
 
 Pipeline:
-    START → [InfraAgent | DataCollection] (parallel)
-    DataCollection → NfMetricsAgent → NfLogsAgent → UeTracesAgent → EvidenceQuality
-    [InfraAgent, EvidenceQuality] → RCAAgent
+    [InfraAgent | DagMapper] (parallel)
+    DagMapper → NfMetricsAgent + NfLogsAgent + UeTracesAgent (parallel) → EvidenceQuality
+    [InfraAgent, EvidenceQuality] → join_for_rca → RCAAgent
     RCAAgent → [confident?] → END or retry
 """
 
@@ -33,11 +33,6 @@ def should_retry(state: TriageState) -> Literal["retry", "finalize"]:
 def increment_attempt(state: TriageState) -> TriageState:
     """Increment attempt counter before retry."""
     state["attempt_count"] = state.get("attempt_count", 1) + 1
-    return state
-
-
-def join_for_rca(state: TriageState) -> TriageState:
-    """Barrier node: waits for both infra_agent and evidence_quality before RCA."""
     return state
 
 
@@ -73,7 +68,7 @@ def create_workflow() -> Any:
     from triage_agent.agents.infra_agent import infra_agent
     from triage_agent.agents.logs_agent import logs_agent
     from triage_agent.agents.metrics_agent import metrics_agent
-    from triage_agent.agents.rca_agent import rca_agent_first_attempt
+    from triage_agent.agents.rca_agent import join_for_rca, rca_agent_first_attempt
     from triage_agent.agents.ue_traces_agent import ue_traces_agent
 
     # Create workflow with state schema
@@ -86,6 +81,7 @@ def create_workflow() -> Any:
     workflow.add_node("logs_agent", logs_agent)
     workflow.add_node("traces_agent", ue_traces_agent)
     workflow.add_node("evidence_quality", compute_evidence_quality)
+    workflow.add_node("join_for_rca", join_for_rca)
     workflow.add_node("rca_agent", rca_agent_first_attempt)
     workflow.add_node("increment_attempt", increment_attempt)
     workflow.add_node("finalize", finalize_report)
@@ -104,10 +100,12 @@ def create_workflow() -> Any:
     workflow.add_edge("logs_agent", "evidence_quality")
     workflow.add_edge("traces_agent", "evidence_quality")
 
-    # evidence_quality → rca_agent directly.
-    # infra_agent runs concurrently with dag_mapper (same superstep) so its results
-    # are already merged into state by the time rca_agent executes.
-    workflow.add_edge("evidence_quality", "rca_agent")
+    # Both infra_agent and evidence_quality converge at join_for_rca (explicit barrier).
+    # LangGraph waits for ALL incoming edges before executing join_for_rca, guaranteeing
+    # infra_agent data is present when evidence is compressed for the LLM prompt.
+    workflow.add_edge("infra_agent", "join_for_rca")
+    workflow.add_edge("evidence_quality", "join_for_rca")
+    workflow.add_edge("join_for_rca", "rca_agent")
 
     # Conditional routing after RCA
     workflow.add_conditional_edges(
@@ -165,5 +163,6 @@ def get_initial_state(alert: dict[str, Any], incident_id: str) -> TriageState:
         max_attempts=get_config().max_attempts,
         needs_more_evidence=False,
         evidence_gaps=None,
+        compressed_evidence=None,
         final_report=None,
     )

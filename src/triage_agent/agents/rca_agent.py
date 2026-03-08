@@ -16,11 +16,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
-from triage_agent.utils import (  # noqa: F401  # re-exported for backwards compat
-    compress_dag,
-    compress_trace_deviations,
-    count_tokens,
-)
+from triage_agent.utils import compress_dag, compress_trace_deviations
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +187,18 @@ def compress_evidence(state: "TriageState") -> dict[str, str]:
         "logs_formatted": format_logs_for_prompt(state.get("logs")),
         "trace_deviations_formatted": format_trace_deviations_for_prompt(compressed_traces),
     }
+
+
+@traceable(name="join_for_rca")
+def join_for_rca(state: TriageState) -> dict[str, Any]:
+    """Barrier node: waits for infra_agent + evidence_quality, then compresses all evidence.
+
+    This is the explicit synchronisation point that guarantees infra_agent data
+    is present in state before the LLM prompt is built. It replaces the previous
+    implicit superstep-merge assumption.
+    """
+    compressed = compress_evidence(state)
+    return {"compressed_evidence": compressed}
 
 
 def create_llm(
@@ -380,7 +388,9 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
         Delta dict with RCA results for LangGraph state merge
     """
     _cfg = get_config()
-    evidence = compress_evidence(state)
+    # compressed_evidence is populated by the join_for_rca barrier node in normal pipeline flow.
+    # Fall back to on-demand compression only when called directly (e.g. in unit tests).
+    evidence = state.get("compressed_evidence") or compress_evidence(state)
     prompt = RCA_PROMPT_TEMPLATE.format(
         procedure_name=", ".join(state.get("procedure_names") or ["unknown"]),
         infra_score=state.get("infra_score", 0.0),

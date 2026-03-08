@@ -41,4 +41,5 @@ class TriageState(TypedDict):
     max_attempts: int  # Hard limit (default: 2)
     needs_more_evidence: bool
     evidence_gaps: list[str] | None  # Identified evidence gaps for second attempt
+    compressed_evidence: dict[str, str] | None  # pre-compressed evidence sections for the LLM prompt
     final_report: dict | None

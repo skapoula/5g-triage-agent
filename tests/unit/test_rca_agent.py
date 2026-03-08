@@ -11,6 +11,7 @@ from triage_agent.agents.rca_agent import (
     format_metrics_for_prompt,
     format_trace_deviations_for_prompt,
     identify_evidence_gaps,
+    join_for_rca,
     rca_agent_first_attempt,
 )
 from triage_agent.graph import get_initial_state
@@ -948,6 +949,29 @@ class TestCompressTraceDeviations:
         active_size = len(json.dumps({"active_dag": devs["active_dag"]})) // 4
         result = compress_trace_deviations(devs, active_size)
         assert "empty_dag" not in result
+
+
+class TestJoinForRca:
+    def test_returns_compressed_evidence_dict(self, sample_initial_state: TriageState) -> None:
+        """join_for_rca returns a delta dict with 'compressed_evidence' key."""
+        result = join_for_rca(sample_initial_state)
+        assert "compressed_evidence" in result
+        assert isinstance(result["compressed_evidence"], dict)
+
+    def test_compressed_evidence_has_prompt_keys(self, sample_initial_state: TriageState) -> None:
+        """compressed_evidence dict contains all RCA_PROMPT_TEMPLATE placeholder keys."""
+        result = join_for_rca(sample_initial_state)
+        expected_keys = {
+            "infra_findings_json", "dag_json",
+            "metrics_formatted", "logs_formatted", "trace_deviations_formatted",
+        }
+        assert expected_keys.issubset(result["compressed_evidence"].keys())
+
+    def test_join_for_rca_with_infra_findings(self, sample_initial_state: TriageState) -> None:
+        """join_for_rca includes infra_findings in compressed_evidence."""
+        sample_initial_state["infra_findings"] = {"pod_restarts": 3}
+        result = join_for_rca(sample_initial_state)
+        assert "pod_restarts" in result["compressed_evidence"]["infra_findings_json"]
 
 
 class TestCompressEvidence:

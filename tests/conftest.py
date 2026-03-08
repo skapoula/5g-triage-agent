@@ -163,7 +163,7 @@ def sample_initial_state(sample_alert: dict[str, Any]) -> TriageState:
         max_attempts=2,
         needs_more_evidence=False,
         evidence_gaps=None,
-        second_attempt_complete=False,
+        compressed_evidence=None,
         final_report=None,
     )
 
