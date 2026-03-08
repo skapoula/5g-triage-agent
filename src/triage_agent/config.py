@@ -271,6 +271,13 @@ class TriageAgentConfig(BaseSettings):
             raise ValueError("URL must start with http:// or https://")
         return v
 
+    @field_validator("artifacts_dir")
+    @classmethod
+    def resolve_artifacts_dir(cls, v: str) -> str:
+        """Resolve relative artifacts_dir to absolute path using CWD at config-load time."""
+        from pathlib import Path  # noqa: PLC0415
+        return str(Path(v).resolve())
+
     @property
     def memgraph_uri(self) -> str:
         """Bolt connection URI for Memgraph."""

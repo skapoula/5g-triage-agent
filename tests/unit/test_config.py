@@ -615,9 +615,11 @@ class TestArtifactsConfig:
     """Tests for artifacts_dir and nf_latency_threshold_seconds fields."""
 
     def test_artifacts_dir_default(self) -> None:
+        from pathlib import Path
         with patch.dict(os.environ, _CLEAN_ENV, clear=True):
             config = TriageAgentConfig(llm_api_key="test-key")
-        assert config.artifacts_dir == "artifacts"
+        assert Path(config.artifacts_dir).is_absolute()
+        assert config.artifacts_dir.endswith("artifacts")
 
     def test_artifacts_dir_from_env(self) -> None:
         with patch.dict(os.environ, {**_CLEAN_ENV, "ARTIFACTS_DIR": "/tmp/data"}, clear=True):
@@ -635,3 +637,17 @@ class TestArtifactsConfig:
         ):
             config = TriageAgentConfig()
         assert config.nf_latency_threshold_seconds == 2.5
+
+
+class TestArtifactsDirResolution:
+    def test_relative_artifacts_dir_is_resolved_to_absolute(self) -> None:
+        """A relative artifacts_dir must be converted to absolute at config load."""
+        from triage_agent.config import TriageAgentConfig
+        from pathlib import Path
+        cfg = TriageAgentConfig(artifacts_dir="artifacts")
+        assert Path(cfg.artifacts_dir).is_absolute()
+
+    def test_absolute_artifacts_dir_unchanged(self) -> None:
+        from triage_agent.config import TriageAgentConfig
+        cfg = TriageAgentConfig(artifacts_dir="/tmp/my_artifacts")
+        assert cfg.artifacts_dir == "/tmp/my_artifacts"
