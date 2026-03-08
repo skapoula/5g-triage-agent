@@ -677,3 +677,34 @@ def test_generate_final_report_empty_procedure_names():
     state["procedure_names"] = None
     report = generate_final_report(state)
     assert report["procedure_name"] == "unknown"
+
+
+def test_rca_prompt_includes_dag_content(monkeypatch):
+    """RCA prompt must include actual DAG content, not null."""
+    import json, uuid
+    import triage_agent.agents.rca_agent as ra
+    from triage_agent.graph import get_initial_state
+
+    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
+    state = get_initial_state(alert, str(uuid.uuid4()))
+    state["procedure_names"] = ["registration_general"]
+    state["dags"] = [{"name": "registration_general", "phases": [], "all_nfs": ["AMF"]}]
+    state["infra_score"] = 0.1
+    state["evidence_quality_score"] = 0.5
+
+    captured = {}
+    def fake_llm(prompt: str, timeout=None):
+        captured["prompt"] = prompt
+        return {
+            "layer": "application", "root_nf": "AMF", "failure_mode": "timeout",
+            "failed_phase": None, "confidence": 0.9, "evidence_chain": [],
+            "alternative_hypotheses": [], "reasoning": "test",
+        }
+    monkeypatch.setattr(ra, "llm_analyze_evidence", fake_llm)
+    ra.rca_agent_first_attempt(state)
+    assert "registration_general" in captured["prompt"]
+    # The word "null" should not appear in the DAG section of the prompt
+    dag_section_start = captured["prompt"].find("PROCEDURE DAG")
+    assert dag_section_start != -1
+    dag_section = captured["prompt"][dag_section_start:dag_section_start+200]
+    assert "null" not in dag_section

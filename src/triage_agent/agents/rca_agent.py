@@ -61,7 +61,7 @@ INFRASTRUCTURE FINDINGS (from InfraAgent):
 Infrastructure Score: {infra_score} (0.0 = no infra issue, 1.0 = confirmed infra issue)
 {infra_findings_json}
 
-PROCEDURE DAG:
+PROCEDURE DAGs (reference procedures for this alert):
 {dag_json}
 
 APPLICATION EVIDENCE (time window: {time_window}):
@@ -432,7 +432,7 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
         procedure_name=", ".join(state.get("procedure_names") or ["unknown"]),
         infra_score=state.get("infra_score", 0.0),
         infra_findings_json=json.dumps(state.get("infra_findings"), indent=2),
-        dag_json=json.dumps(state.get("dag"), indent=2),
+        dag_json=json.dumps(state.get("dags"), indent=2),
         time_window="alert_time - 5min to alert_time + 60s",
         metrics_formatted=format_metrics_for_prompt(state.get("metrics")),
         logs_formatted=format_logs_for_prompt(state.get("logs")),
