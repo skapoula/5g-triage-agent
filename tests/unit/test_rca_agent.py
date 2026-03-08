@@ -645,6 +645,7 @@ def test_rca_prompt_includes_dag_content(monkeypatch):
             "alternative_hypotheses": [], "reasoning": "test",
         }
     monkeypatch.setattr(ra, "llm_analyze_evidence", fake_llm)
+    state.update(ra.join_for_rca(state))  # populate compressed_evidence as barrier node would
     ra.rca_agent_first_attempt(state)
     assert "registration_general" in captured["prompt"]
     # The word "null" should not appear in the DAG section of the prompt

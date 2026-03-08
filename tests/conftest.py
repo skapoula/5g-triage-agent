@@ -163,7 +163,13 @@ def sample_initial_state(sample_alert: dict[str, Any]) -> TriageState:
         max_attempts=2,
         needs_more_evidence=False,
         evidence_gaps=None,
-        compressed_evidence=None,
+        compressed_evidence={
+            "infra_findings_json": "{}",
+            "dag_json": "[]",
+            "metrics_formatted": "No metrics available.",
+            "logs_formatted": "No logs available.",
+            "trace_deviations_formatted": "No UE trace deviations available.",
+        },
         final_report=None,
     )
 

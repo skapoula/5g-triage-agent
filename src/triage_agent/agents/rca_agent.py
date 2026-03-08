@@ -388,9 +388,9 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
         Delta dict with RCA results for LangGraph state merge
     """
     _cfg = get_config()
-    # compressed_evidence is populated by the join_for_rca barrier node in normal pipeline flow.
-    # Fall back to on-demand compression only when called directly (e.g. in unit tests).
-    evidence = state.get("compressed_evidence") or compress_evidence(state)
+    # compressed_evidence is always present — populated by join_for_rca barrier node.
+    # A KeyError here means the graph topology is broken (rca_agent reachable without join_for_rca).
+    evidence = state["compressed_evidence"]
     prompt = RCA_PROMPT_TEMPLATE.format(
         procedure_name=", ".join(state.get("procedure_names") or ["unknown"]),
         infra_score=state.get("infra_score", 0.0),
