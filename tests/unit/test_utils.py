@@ -164,3 +164,39 @@ def test_save_artifact_does_not_raise_on_bad_path() -> None:
     save_artifact("inc", "x.json", {"a": 1}, "/proc/triage_test_nonexistent")
     # Give background thread time to attempt and fail
     time.sleep(0.1)
+
+
+from triage_agent.utils import compress_dag, compress_trace_deviations
+
+
+class TestCompressDag:
+    def test_returns_empty_for_none(self) -> None:
+        assert compress_dag(None, 1000) == []
+
+    def test_returns_as_is_when_within_budget(self) -> None:
+        dags = [{"phases": [{"order": 1, "keywords": ["k"], "success_log": "ok"}]}]
+        result = compress_dag(dags, 10_000)
+        assert result == dags
+
+    def test_strips_keywords_and_success_log_when_over_budget(self) -> None:
+        phase = {"order": 1, "keywords": ["k"] * 500, "success_log": "ok", "failure_patterns": ["*fail*"]}
+        dags = [{"phases": [phase]}]
+        result = compress_dag(dags, 50)
+        assert "keywords" not in result[0]["phases"][0]
+        assert "success_log" not in result[0]["phases"][0]
+
+    def test_all_zero_phases_returns_stable_result(self) -> None:
+        """compress_dag must not raise or loop infinitely when all phases are empty after step 3."""
+        dags = [{"phases": []} for _ in range(20)]
+        result = compress_dag(dags, 1)
+        assert isinstance(result, list)
+
+
+class TestCompressTraceDeviations:
+    def test_returns_empty_for_none(self) -> None:
+        assert compress_trace_deviations(None, 1000) == {}
+
+    def test_slices_per_dag_to_max(self) -> None:
+        devs = {"dag_a": [{"d": i} for i in range(10)]}
+        result = compress_trace_deviations(devs, 10_000)
+        assert len(result["dag_a"]) <= 3   # default rca_max_deviations_per_dag
