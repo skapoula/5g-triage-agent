@@ -461,6 +461,41 @@ class TestCleanupIncidentTraces:
         assert params["incident_id"] == "INC-SPECIFIC"
 
 
+def test_ingest_captured_trace_uses_message_field() -> None:
+    """Cypher must write event.message and event.order, not event.action."""
+    from unittest.mock import MagicMock
+    from triage_agent.memgraph.connection import MemgraphConnection
+    conn = MemgraphConnection.__new__(MemgraphConnection)
+    conn._max_retries = 3
+
+    captured_query: dict[str, Any] = {}
+    def fake_write(query: str, params: dict[str, Any] | None = None) -> None:
+        captured_query["query"] = query
+        captured_query["params"] = params
+    conn.execute_cypher_write = fake_write  # type: ignore[method-assign]
+
+    events = [{"order": 0, "message": "Auth request", "timestamp": 1000, "nf": "amf"}]
+    conn.ingest_captured_trace("inc-1", "123456789012345", events)
+
+    q = captured_query["query"]
+    assert "event.message" in q
+    assert "event.order" in q
+    assert "event.action" not in q
+
+
+def test_detect_deviation_uses_message_field() -> None:
+    """Cypher must compare event.message, not event.action."""
+    from unittest.mock import MagicMock
+    from triage_agent.memgraph.connection import MemgraphConnection
+    conn = MemgraphConnection.__new__(MemgraphConnection)
+    conn._max_retries = 3
+    conn.execute_cypher = MagicMock(return_value=[])  # type: ignore[method-assign]
+    conn.detect_deviation("inc-1", "imsi-1", "registration_general")
+    called_query = conn.execute_cypher.call_args[0][0]
+    assert "event.message" in called_query
+    assert "event.action" not in called_query
+
+
 # ---------------------------------------------------------------------------
 # close / context manager
 # ---------------------------------------------------------------------------

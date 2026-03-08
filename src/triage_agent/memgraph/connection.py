@@ -110,7 +110,7 @@ class MemgraphConnection:
         UNWIND $events AS event
         CREATE (t)-[:EVENT]->(e:TraceEvent {
             order: event.order,
-            action: event.action,
+            message: event.message,
             timestamp: event.timestamp,
             nf: event.nf
         })
@@ -134,10 +134,10 @@ class MemgraphConnection:
         query = """
         MATCH (ref:ReferenceTrace {name: $dag_name})-[:STEP]->(refStep:RefEvent)
         MATCH (trace:CapturedTrace {incident_id: $incident_id, imsi: $imsi})-[:EVENT]->(event:TraceEvent)
-        WHERE refStep.order = event.order AND NOT event.action CONTAINS refStep.action
+        WHERE refStep.order = event.order AND NOT event.message CONTAINS refStep.action
         RETURN refStep.order AS deviation_point,
                refStep.action AS expected,
-               event.action AS actual,
+               event.message AS actual,
                refStep.nf AS expected_nf,
                event.nf AS actual_nf
         ORDER BY refStep.order

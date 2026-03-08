@@ -85,6 +85,8 @@ def contract_imsi_trace(
             "message": entry.get("message", ""),
         })
     events.sort(key=lambda e: e["timestamp"])
+    for i, event in enumerate(events):
+        event["order"] = i
     return {"imsi": imsi, "events": events}
 
 

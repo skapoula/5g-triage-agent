@@ -302,6 +302,25 @@ class TestContractImsiTrace:
         assert result["events"] == []
 
 
+def test_contract_imsi_trace_includes_order() -> None:
+    from triage_agent.agents.ue_traces_agent import contract_imsi_trace
+    raw = [
+        {"timestamp": 100, "pod": "amf-abc", "message": "SVC_REQUEST"},
+        {"timestamp": 90,  "pod": "smf-xyz", "message": "PDU_SESSION"},
+    ]
+    trace = contract_imsi_trace(raw, "123456789012345")
+    assert trace["imsi"] == "123456789012345"
+    # Events sorted by timestamp
+    assert trace["events"][0]["timestamp"] == 90
+    assert trace["events"][1]["timestamp"] == 100
+    # Each event must have order, message, nf, timestamp
+    for i, event in enumerate(trace["events"]):
+        assert event["order"] == i
+        assert "message" in event
+        assert "nf" in event
+        assert "timestamp" in event
+
+
 # ===========================================================================
 # ingest_traces_to_memgraph
 # ===========================================================================
