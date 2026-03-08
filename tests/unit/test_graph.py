@@ -170,3 +170,24 @@ class TestCreateWorkflow:
 
         assert ("metrics_agent", "logs_agent") not in edge_pairs
         assert ("logs_agent", "traces_agent") not in edge_pairs
+
+    def test_rca_agent_has_single_incoming_edge(self) -> None:
+        """rca_agent must have exactly one incoming edge from the pipeline (join_for_rca barrier).
+
+        The retry loop (increment_attempt → rca_agent) is expected; the only other
+        source must be join_for_rca, not infra_agent or evidence_quality directly.
+        """
+        graph = create_workflow().get_graph()
+        rca_incoming_sources = {e.source for e in graph.edges if e.target == "rca_agent"}
+        # Remove the known retry-loop source; what remains must be exactly join_for_rca
+        pipeline_sources = rca_incoming_sources - {"increment_attempt"}
+        assert pipeline_sources == {"join_for_rca"}, (
+            f"rca_agent pipeline sources are {pipeline_sources} — expected exactly {{'join_for_rca'}}. "
+            f"All incoming sources: {rca_incoming_sources}"
+        )
+
+    def test_join_for_rca_node_exists(self) -> None:
+        """join_for_rca barrier node must exist in the workflow graph."""
+        graph = create_workflow().get_graph()
+        node_names = [n for n in graph.nodes]
+        assert "join_for_rca" in node_names, f"join_for_rca not found. Nodes: {node_names}"

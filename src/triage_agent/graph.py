@@ -36,6 +36,11 @@ def increment_attempt(state: TriageState) -> TriageState:
     return state
 
 
+def join_for_rca(state: TriageState) -> TriageState:
+    """Barrier node: waits for both infra_agent and evidence_quality before RCA."""
+    return state
+
+
 def finalize_report(state: TriageState) -> TriageState:
     """Finalize the RCA report."""
     state["final_report"] = {
@@ -79,6 +84,7 @@ def create_workflow() -> Any:
     workflow.add_node("traces_agent", discover_and_trace_imsis)
     workflow.add_node("evidence_quality", compute_evidence_quality)
     workflow.add_node("rca_agent", rca_agent_first_attempt)
+    workflow.add_node("join_for_rca", join_for_rca)
     workflow.add_node("increment_attempt", increment_attempt)
     workflow.add_node("finalize", finalize_report)
 
@@ -97,8 +103,10 @@ def create_workflow() -> Any:
     workflow.add_edge("traces_agent", "evidence_quality")
 
     # Both branches (infra + evidence) must complete before RCA
-    workflow.add_edge("infra_agent", "rca_agent")
-    workflow.add_edge("evidence_quality", "rca_agent")
+    # join_for_rca acts as a barrier: both branches funnel into it, then one edge to rca_agent
+    workflow.add_edge("infra_agent", "join_for_rca")
+    workflow.add_edge("evidence_quality", "join_for_rca")
+    workflow.add_edge("join_for_rca", "rca_agent")
 
     # Conditional routing after RCA
     workflow.add_conditional_edges(
