@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
+from triage_agent.utils import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -154,162 +155,15 @@ def format_trace_deviations_for_prompt(deviations: dict[str, list[dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Evidence compression — keeps all evidence within LLM context budget
+# Evidence compression — DAG and trace deviations (per-agent for infra/metrics/logs)
 # ---------------------------------------------------------------------------
+#
+# count_tokens, compress_nf_metrics, compress_nf_logs live in their respective
+# agents (metrics_agent.py, logs_agent.py) and in utils.py.  By the time
+# compress_evidence() is called, state["infra_findings"], state["metrics"], and
+# state["logs"] are already pre-compressed.  Only DAGs and trace deviations are
+# compressed here (they have no dedicated agent-level compression step).
 
-
-def count_tokens(text: str) -> int:
-    """Approximate token count using 4-chars-per-token heuristic."""
-    return max(1, len(text) // 4)
-
-
-def compress_infra_findings(
-    infra_findings: dict[str, Any] | None,
-    token_budget: int,
-) -> dict[str, Any]:
-    """Reduce infra_findings to the most RCA-relevant fields within budget.
-
-    Priority order (highest first):
-        critical_events → concurrent_failures → oom_kills →
-        pod_restarts (non-zero only) → resource_usage → node_health (dropped first)
-    """
-    if not infra_findings:
-        return {}
-
-    priority_keys = [
-        "critical_events",
-        "concurrent_failures",
-        "oom_kills",
-        "pod_restarts",
-        "resource_usage",
-    ]
-
-    result: dict[str, Any] = {}
-
-    # Handle pod_restarts specially: filter out zero-restart pods
-    findings = dict(infra_findings)
-    if "pod_restarts" in findings and isinstance(findings["pod_restarts"], dict):
-        findings["pod_restarts"] = {
-            pod: count
-            for pod, count in findings["pod_restarts"].items()
-            if count > 0
-        }
-
-    # Add priority fields in order, stopping if budget exceeded
-    for key in priority_keys:
-        if key not in findings:
-            continue
-        candidate = {**result, key: findings[key]}
-        if count_tokens(json.dumps(candidate)) <= token_budget:
-            result = candidate
-
-    return result
-
-
-def compress_metrics(
-    metrics: dict[str, Any] | None,
-    token_budget: int,
-) -> dict[str, Any]:
-    """Compress metrics to fit within token_budget.
-
-    If the metrics are already a compact summary dict (not raw Prometheus format),
-    they are returned as-is (or with NFs dropped) to fit the budget.
-
-    Raw Prometheus format (list of {metric: {labels}, value: [ts, str]}) is
-    compacted to {NF: {report_label: float}} summary dicts.
-    """
-    if not metrics:
-        return {}
-
-    def _compact_nf(entries: Any) -> Any:
-        """Collapse a list of Prometheus vector entries to a summary dict."""
-        if not isinstance(entries, list):
-            return entries
-        summary: dict[str, float] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            metric_labels = entry.get("metric", {})
-            value_pair = entry.get("value", [None, None])
-            report_key = metric_labels.get("report", "")
-            try:
-                val = float(value_pair[1]) if len(value_pair) > 1 else 0.0
-            except (TypeError, ValueError):
-                val = 0.0
-            if report_key:
-                summary[report_key] = val
-        return summary if summary else entries
-
-    compacted = {nf: _compact_nf(data) for nf, data in metrics.items()}
-
-    if count_tokens(json.dumps(compacted)) <= token_budget:
-        return compacted
-
-    # Drop NFs one by one (from the end) until within budget
-    nf_names = list(compacted.keys())
-    while nf_names and count_tokens(json.dumps({k: compacted[k] for k in nf_names})) > token_budget:
-        nf_names.pop()
-
-    return {k: compacted[k] for k in nf_names}
-
-
-def compress_logs(
-    logs: dict[str, Any] | None,
-    token_budget: int,
-) -> dict[str, Any]:
-    """Compress logs to fit within token_budget.
-
-    Entries are scored by priority:
-        1 = DAG-matched (matched_phase + matched_pattern set)
-        2 = DAG phase matched only
-        3 = ERROR or FATAL level
-        4 = WARN level
-        5 = everything else (dropped first)
-
-    Messages longer than cfg.rca_log_max_message_chars are truncated.
-    """
-    if not logs:
-        return {}
-
-    cfg = get_config()
-    max_msg = cfg.rca_log_max_message_chars
-
-    def _priority(entry: dict[str, Any]) -> int:
-        if entry.get("matched_phase") and entry.get("matched_pattern"):
-            return 1
-        if entry.get("matched_phase"):
-            return 2
-        level = str(entry.get("level", "")).upper()
-        if level in ("ERROR", "FATAL"):
-            return 3
-        if level == "WARN":
-            return 4
-        return 5
-
-    def _truncate(entry: dict[str, Any]) -> dict[str, Any]:
-        msg = str(entry.get("message", ""))
-        if len(msg) > max_msg:
-            entry = {**entry, "message": msg[:max_msg] + "[…]"}
-        return entry
-
-    # Flatten all entries with their NF name attached, sorted by priority then recency
-    flat: list[tuple[int, str, dict[str, Any]]] = []
-    for nf, entries in logs.items():
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            flat.append((_priority(entry), nf, _truncate(entry)))
-
-    flat.sort(key=lambda x: (x[0], -x[2].get("timestamp", 0)))
-
-    result: dict[str, list[dict[str, Any]]] = {}
-    for _prio, nf, entry in flat:
-        candidate = {**result, nf: result.get(nf, []) + [entry]}
-        if count_tokens(json.dumps(candidate)) > token_budget:
-            break
-        result = candidate
-
-    return result
 
 
 def compress_dag(
@@ -407,31 +261,24 @@ def compress_trace_deviations(
 
 
 def compress_evidence(state: "TriageState") -> dict[str, str]:
-    """Compress all evidence sections to fit within per-section token budgets.
+    """Format evidence sections for the LLM prompt.
 
-    Returns a dict of pre-formatted strings keyed by RCA_PROMPT_TEMPLATE placeholders.
+    infra_findings, metrics, and logs are already compressed by their respective
+    agents before being written to state.  Only DAGs and trace_deviations are
+    compressed here (they have no dedicated agent-level step).
+
+    Returns a dict keyed by RCA_PROMPT_TEMPLATE placeholders.
     """
     cfg = get_config()
-    compressed_infra = compress_infra_findings(
-        state.get("infra_findings"), cfg.rca_token_budget_infra
-    )
-    compressed_dags = compress_dag(
-        state.get("dags"), cfg.rca_token_budget_dag
-    )
-    compressed_metrics = compress_metrics(
-        state.get("metrics"), cfg.rca_token_budget_metrics
-    )
-    compressed_logs = compress_logs(
-        state.get("logs"), cfg.rca_token_budget_logs
-    )
+    compressed_dags = compress_dag(state.get("dags"), cfg.rca_token_budget_dag)
     compressed_traces = compress_trace_deviations(
         state.get("trace_deviations"), cfg.rca_token_budget_traces
     )
     return {
-        "infra_findings_json": json.dumps(compressed_infra, indent=2),
+        "infra_findings_json": json.dumps(state.get("infra_findings") or {}, indent=2),
         "dag_json": json.dumps(compressed_dags, indent=2),
-        "metrics_formatted": format_metrics_for_prompt(compressed_metrics),
-        "logs_formatted": format_logs_for_prompt(compressed_logs),
+        "metrics_formatted": format_metrics_for_prompt(state.get("metrics")),
+        "logs_formatted": format_logs_for_prompt(state.get("logs")),
         "trace_deviations_formatted": format_trace_deviations_for_prompt(compressed_traces),
     }
 

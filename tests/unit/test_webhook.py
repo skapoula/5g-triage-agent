@@ -138,7 +138,9 @@ class TestWebhookEndpoint:
         self, client: TestClient, alertmanager_payload: dict[str, Any]
     ) -> None:
         """Should accept valid Alertmanager payload and return 200."""
-        response = client.post("/webhook", json=alertmanager_payload)
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            mock_triage.return_value = None
+            response = client.post("/webhook", json=alertmanager_payload)
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "accepted"
@@ -149,8 +151,10 @@ class TestWebhookEndpoint:
         self, client: TestClient, alertmanager_payload: dict[str, Any]
     ) -> None:
         """Each request should generate a unique incident_id."""
-        resp1 = client.post("/webhook", json=alertmanager_payload)
-        resp2 = client.post("/webhook", json=alertmanager_payload)
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            mock_triage.return_value = None
+            resp1 = client.post("/webhook", json=alertmanager_payload)
+            resp2 = client.post("/webhook", json=alertmanager_payload)
         assert resp1.json()["incident_id"] != resp2.json()["incident_id"]
 
     def test_rejects_empty_alerts(self, client: TestClient) -> None:
@@ -186,7 +190,9 @@ class TestWebhookEndpoint:
             "status": "firing",
             "alerts": [firing, resolved, firing],
         }
-        response = client.post("/webhook", json=payload)
+        with patch("triage_agent.api.webhook._run_triage") as mock_triage:
+            mock_triage.return_value = None
+            response = client.post("/webhook", json=payload)
         data = response.json()
         assert data["alerts_received"] == 3
         assert "2 firing" in data["message"]

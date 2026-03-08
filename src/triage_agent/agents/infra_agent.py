@@ -4,13 +4,16 @@ Rule-based (no LLM). Queries Prometheus via MCP for pod-level health,
 computes an infrastructure score, and forwards findings to RCAAgent.
 """
 
+import logging
 from typing import Any
 
 from langsmith import traceable
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
-from triage_agent.utils import parse_timestamp
+from triage_agent.utils import count_tokens, parse_timestamp, save_artifact
+
+logger = logging.getLogger(__name__)
 
 
 def build_infra_queries(core_namespace: str) -> list[str]:
@@ -258,11 +261,91 @@ def extract_nfs_from_alert(alert: dict[str, Any]) -> list[str]:
     return nfs
 
 
+def compress_infra_findings_for_agent(
+    infra_findings: dict[str, Any],
+    infra_score: float,
+    token_budget: int,
+) -> dict[str, Any]:
+    """Compress infra findings before storing in state.
+
+    If infra_score == 0.0 and no critical events are present, returns a compact
+    healthy-status sentinel instead of the full (mostly-empty) findings dict.
+
+    Otherwise returns only problematic data:
+      - pod_restarts: non-zero only
+      - oom_kills: as-is (already filtered by extract_oom_events)
+      - resource_usage: pods above CPU/memory saturation thresholds
+      - node_health: non-Running pods only
+      - concurrent_failures: only if > 0
+      - critical_events: as-is
+
+    If the result still exceeds token_budget, logs a WARNING and forwards anyway
+    (correctness > budget).
+    """
+    cfg = get_config()
+
+    has_issues = (
+        infra_score > 0.0
+        or bool(infra_findings.get("critical_events"))
+        or bool(infra_findings.get("oom_kills"))
+    )
+
+    if not has_issues:
+        return {"status": "all_pods_healthy"}
+
+    compressed: dict[str, Any] = {}
+
+    if infra_findings.get("critical_events"):
+        compressed["critical_events"] = infra_findings["critical_events"]
+
+    if infra_findings.get("oom_kills"):
+        compressed["oom_kills"] = infra_findings["oom_kills"]
+
+    nonzero_restarts = {
+        pod: count
+        for pod, count in infra_findings.get("pod_restarts", {}).items()
+        if count > 0
+    }
+    if nonzero_restarts:
+        compressed["pod_restarts"] = nonzero_restarts
+
+    saturated_resources = {
+        pod: res
+        for pod, res in infra_findings.get("resource_usage", {}).items()
+        if (
+            res.get("memory_percent", 0.0) > cfg.memory_saturation_pct
+            or res.get("cpu", 0.0) > cfg.cpu_saturation_cores
+        )
+    }
+    if saturated_resources:
+        compressed["resource_usage"] = saturated_resources
+
+    unhealthy_nodes = {
+        pod: phase
+        for pod, phase in infra_findings.get("node_health", {}).items()
+        if phase != "Running"
+    }
+    if unhealthy_nodes:
+        compressed["node_health"] = unhealthy_nodes
+
+    if infra_findings.get("concurrent_failures", 0) > 0:
+        compressed["concurrent_failures"] = infra_findings["concurrent_failures"]
+
+    if count_tokens(str(compressed)) > token_budget:
+        logger.warning(
+            "Compressed infra findings exceed token budget (%d tokens), forwarding anyway",
+            count_tokens(str(compressed)),
+        )
+
+    return compressed or {"status": "all_pods_healthy"}
+
+
 @traceable(name="InfraAgent")
 def infra_agent(state: TriageState) -> dict[str, Any]:
     """InfraAgent entry point. Rule-based, no LLM."""
     cfg = get_config()
     alert = state["alert"]
+    incident_id = state["incident_id"]
 
     alert_time = parse_timestamp(alert["startsAt"])
     time_window = (
@@ -278,17 +361,32 @@ def infra_agent(state: TriageState) -> dict[str, Any]:
 
     infra_score = compute_infrastructure_score(metrics)
 
+    raw_findings: dict[str, Any] = {
+        "pod_restarts": extract_restart_counts(metrics),
+        "oom_kills": extract_oom_events(metrics),
+        "resource_usage": extract_resource_metrics(metrics),
+        "node_health": extract_node_status(metrics),
+        "concurrent_failures": count_concurrent_failures(metrics),
+        "critical_events": extract_critical_events(metrics),
+    }
+
+    # Save pre-filter snapshot (non-blocking, non-fatal)
+    save_artifact(incident_id, "pre_filter_infra.json", raw_findings, cfg.artifacts_dir)
+
+    compressed_findings = compress_infra_findings_for_agent(
+        raw_findings, infra_score, cfg.rca_token_budget_infra
+    )
+
+    # Save post-filter snapshot
+    save_artifact(
+        incident_id, "post_filter_infra.json", compressed_findings, cfg.artifacts_dir
+    )
+
     # Return only the keys this agent writes — avoids LangGraph parallel-merge conflict
     # with metrics_agent (both start from START in the same step).
+    _ = affected_nfs, time_window  # computed but used only for MCP queries (wired later)
     return {
         "infra_checked": True,
         "infra_score": infra_score,
-        "infra_findings": {
-            "pod_restarts": extract_restart_counts(metrics),
-            "oom_kills": extract_oom_events(metrics),
-            "resource_usage": extract_resource_metrics(metrics),
-            "node_health": extract_node_status(metrics),
-            "concurrent_failures": count_concurrent_failures(metrics),
-            "critical_events": extract_critical_events(metrics),
-        },
+        "infra_findings": compressed_findings,
     }

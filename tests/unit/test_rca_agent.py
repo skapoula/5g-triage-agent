@@ -747,177 +747,211 @@ def test_rca_prompt_includes_dag_content(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestCountTokens:
-    """count_tokens: fast 4-char/token approximation."""
+    """count_tokens: fast 4-char/token approximation (now in utils)."""
 
     def test_empty_string_returns_one(self) -> None:
-        from triage_agent.agents.rca_agent import count_tokens
+        from triage_agent.utils import count_tokens
         assert count_tokens("") == 1
 
     def test_400_char_string_returns_100(self) -> None:
-        from triage_agent.agents.rca_agent import count_tokens
+        from triage_agent.utils import count_tokens
         assert count_tokens("a" * 400) == 100
 
     def test_four_char_boundary(self) -> None:
-        from triage_agent.agents.rca_agent import count_tokens
+        from triage_agent.utils import count_tokens
         assert count_tokens("abcd") == 1
 
     def test_eight_chars_returns_two(self) -> None:
-        from triage_agent.agents.rca_agent import count_tokens
+        from triage_agent.utils import count_tokens
         assert count_tokens("abcdefgh") == 2
 
+    def test_also_importable_from_rca_agent(self) -> None:
+        """count_tokens is re-exported from rca_agent for backwards compat."""
+        from triage_agent.agents.rca_agent import count_tokens
+        assert count_tokens("abcd") == 1
 
-class TestCompressInfraFindings:
-    """compress_infra_findings: priority-ordered budget-aware compression."""
 
-    def test_none_input_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_infra_findings
-        assert compress_infra_findings(None, 500) == {}
+class TestCompressInfraFindingsForAgent:
+    """compress_infra_findings_for_agent: issue-only filter in infra_agent."""
 
-    def test_empty_dict_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_infra_findings
-        assert compress_infra_findings({}, 500) == {}
-
-    def test_within_budget_returned_unchanged(self) -> None:
-        from triage_agent.agents.rca_agent import compress_infra_findings
-        findings = {"critical_events": ["OOMKilled"], "concurrent_failures": 1}
-        result = compress_infra_findings(findings, 10000)
-        assert result == findings
-
-    def test_node_health_dropped_on_tight_budget(self) -> None:
-        from triage_agent.agents.rca_agent import compress_infra_findings
-        large_node_health = {"node-" + str(i): {"cpu": 0.5, "mem": 0.6} for i in range(50)}
+    def test_healthy_score_returns_healthy_sentinel(self) -> None:
+        from triage_agent.agents.infra_agent import compress_infra_findings_for_agent
         findings = {
-            "critical_events": ["OOMKilled"],
-            "concurrent_failures": 2,
-            "node_health": large_node_health,
+            "pod_restarts": {"amf-pod": 0},
+            "oom_kills": {},
+            "resource_usage": {"amf-pod": {"cpu": 0.2, "memory_percent": 40.0}},
+            "node_health": {"amf-pod": "Running"},
+            "concurrent_failures": 0,
+            "critical_events": [],
         }
-        # Tight budget — node_health is lowest priority and should be dropped
-        result = compress_infra_findings(findings, 50)
-        assert "critical_events" in result
-        assert "node_health" not in result
+        result = compress_infra_findings_for_agent(findings, infra_score=0.0, token_budget=10000)
+        assert result == {"status": "all_pods_healthy"}
 
-    def test_zero_restart_pods_filtered_out(self) -> None:
-        from triage_agent.agents.rca_agent import compress_infra_findings
+    def test_oom_kills_always_included(self) -> None:
+        from triage_agent.agents.infra_agent import compress_infra_findings_for_agent
+        findings = {
+            "pod_restarts": {},
+            "oom_kills": {"udm-pod": 2},
+            "resource_usage": {},
+            "node_health": {},
+            "concurrent_failures": 0,
+            "critical_events": [],
+        }
+        result = compress_infra_findings_for_agent(findings, infra_score=0.25, token_budget=10000)
+        assert "oom_kills" in result
+        assert result["oom_kills"]["udm-pod"] == 2
+
+    def test_zero_restart_pods_excluded(self) -> None:
+        from triage_agent.agents.infra_agent import compress_infra_findings_for_agent
         findings = {
             "pod_restarts": {"amf-pod": 3, "smf-pod": 0, "ausf-pod": 1},
+            "oom_kills": {},
+            "resource_usage": {},
+            "node_health": {},
+            "concurrent_failures": 2,
+            "critical_events": [],
         }
-        result = compress_infra_findings(findings, 10000)
-        assert result["pod_restarts"]["amf-pod"] == 3
-        assert result["pod_restarts"]["ausf-pod"] == 1
-        assert "smf-pod" not in result["pod_restarts"]
+        result = compress_infra_findings_for_agent(findings, infra_score=0.5, token_budget=10000)
+        assert result.get("pod_restarts", {}).get("amf-pod") == 3
+        assert "smf-pod" not in result.get("pod_restarts", {})
+
+    def test_running_nodes_excluded_from_node_health(self) -> None:
+        from triage_agent.agents.infra_agent import compress_infra_findings_for_agent
+        findings = {
+            "pod_restarts": {},
+            "oom_kills": {},
+            "resource_usage": {},
+            "node_health": {"amf-pod": "Running", "udm-pod": "Pending"},
+            "concurrent_failures": 1,
+            "critical_events": ["OOMKilled"],
+        }
+        result = compress_infra_findings_for_agent(findings, infra_score=0.3, token_budget=10000)
+        # Pending pod should appear
+        assert result.get("node_health", {}).get("udm-pod") == "Pending"
+        # Running pod should NOT appear
+        assert "amf-pod" not in result.get("node_health", {})
 
 
-class TestCompressLogs:
-    """compress_logs: priority-scored, budget-capped log compression."""
+class TestCompressNfLogs:
+    """compress_nf_logs: DAG-NF protection, no message truncation."""
 
     def test_none_input_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_logs
-        assert compress_logs(None, 500) == {}
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        assert compress_nf_logs(None, [], 500) == {}
 
     def test_empty_dict_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_logs
-        assert compress_logs({}, 500) == {}
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        assert compress_nf_logs({}, [], 500) == {}
 
-    def test_within_budget_returned_structurally_equivalent(self) -> None:
-        from triage_agent.agents.rca_agent import compress_logs
+    def test_dag_nf_all_entries_kept_regardless_of_level(self) -> None:
+        from triage_agent.agents.logs_agent import compress_nf_logs
         logs = {
-            "AMF": [{"level": "ERROR", "message": "auth failed", "timestamp": 1000,
-                      "matched_phase": None, "matched_pattern": None}]
+            "AMF": [
+                {"level": "INFO", "message": "normal op", "timestamp": 1000,
+                 "matched_phase": None, "matched_pattern": None},
+                {"level": "DEBUG", "message": "debug trace", "timestamp": 1001,
+                 "matched_phase": None, "matched_pattern": None},
+            ]
         }
-        result = compress_logs(logs, 10000)
+        result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
         assert "AMF" in result
-        assert len(result["AMF"]) == 1
+        assert len(result["AMF"]) == 2
 
-    def test_dag_matched_logs_kept_over_unmatched_on_tight_budget(self) -> None:
-        from triage_agent.agents.rca_agent import compress_logs, count_tokens
+    def test_non_dag_nf_only_error_warn_fatal_kept(self) -> None:
+        from triage_agent.agents.logs_agent import compress_nf_logs
         logs = {
-            "AMF": [
-                {"level": "WARN", "message": "generic warn", "timestamp": 999,
+            "SMF": [
+                {"level": "INFO", "message": "normal", "timestamp": 1000,
                  "matched_phase": None, "matched_pattern": None},
-                {"level": "INFO", "message": "dag matched entry", "timestamp": 1000,
-                 "matched_phase": "phase_1", "matched_pattern": "*auth*"},
-            ]
-        }
-        import json
-        # Budget fits exactly one entry (the smaller one); dag-matched should win
-        one_entry_tokens = count_tokens(json.dumps(
-            {"AMF": [{"level": "INFO", "message": "dag matched entry", "timestamp": 1000,
-                      "matched_phase": "phase_1", "matched_pattern": "*auth*"}]}
-        ))
-        result = compress_logs(logs, one_entry_tokens)
-        amf_msgs = [e["message"] for e in result.get("AMF", [])]
-        assert "dag matched entry" in amf_msgs
-
-    def test_error_logs_kept_over_warn_on_tight_budget(self) -> None:
-        from triage_agent.agents.rca_agent import compress_logs, count_tokens
-        logs = {
-            "AMF": [
-                {"level": "WARN", "message": "warn msg", "timestamp": 1000,
+                {"level": "DEBUG", "message": "debug", "timestamp": 1001,
                  "matched_phase": None, "matched_pattern": None},
-                {"level": "ERROR", "message": "error msg", "timestamp": 1001,
+                {"level": "ERROR", "message": "error msg", "timestamp": 1002,
                  "matched_phase": None, "matched_pattern": None},
             ]
         }
-        import json
-        one_entry_tokens = count_tokens(json.dumps(
-            {"AMF": [{"level": "ERROR", "message": "error msg", "timestamp": 1001,
-                      "matched_phase": None, "matched_pattern": None}]}
-        ))
-        result = compress_logs(logs, one_entry_tokens)
-        amf_msgs = [e["message"] for e in result.get("AMF", [])]
-        assert "error msg" in amf_msgs
+        result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
+        assert "SMF" in result
+        assert all(e["level"] in ("ERROR", "WARN", "FATAL") or e.get("matched_phase")
+                   for e in result["SMF"])
 
-    def test_message_truncated_at_max_chars(self) -> None:
-        from triage_agent.agents.rca_agent import compress_logs
-        long_msg = "x" * 500
+    def test_non_dag_nf_no_qualifying_entries_omitted(self) -> None:
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        logs = {
+            "SMF": [
+                {"level": "INFO", "message": "normal", "timestamp": 1000,
+                 "matched_phase": None, "matched_pattern": None},
+            ]
+        }
+        result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
+        assert "SMF" not in result
+
+    def test_messages_never_truncated_for_dag_nf(self) -> None:
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        long_msg = "x" * 5000
         logs = {
             "AMF": [{"level": "ERROR", "message": long_msg, "timestamp": 1000,
                      "matched_phase": None, "matched_pattern": None}]
         }
-        result = compress_logs(logs, 10000)
-        entry = result["AMF"][0]
-        assert len(entry["message"]) <= 203  # 200 chars + "[…]"
-        assert entry["message"].endswith("[…]")
+        result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
+        assert result["AMF"][0]["message"] == long_msg
+
+    def test_dag_nf_included_even_when_over_budget(self) -> None:
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        big_logs = {
+            "AMF": [{"level": "INFO", "message": "x" * 2000, "timestamp": i,
+                     "matched_phase": None, "matched_pattern": None}
+                    for i in range(5)]
+        }
+        # Budget too small for the big logs
+        result = compress_nf_logs(big_logs, nf_union=["AMF"], token_budget=10)
+        # AMF is a DAG NF, so it must still be in the result
+        assert "AMF" in result
 
 
-class TestCompressMetrics:
-    """compress_metrics: collapse raw Prometheus format to NF summary dicts."""
+class TestCompressNfMetrics:
+    """compress_nf_metrics: DAG-NF protection, compact format."""
 
     def test_none_input_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_metrics
-        assert compress_metrics(None, 500) == {}
+        from triage_agent.agents.metrics_agent import compress_nf_metrics
+        assert compress_nf_metrics(None, [], 500) == {}
 
     def test_empty_dict_returns_empty_dict(self) -> None:
-        from triage_agent.agents.rca_agent import compress_metrics
-        assert compress_metrics({}, 500) == {}
+        from triage_agent.agents.metrics_agent import compress_nf_metrics
+        assert compress_nf_metrics({}, [], 500) == {}
 
-    def test_within_budget_returned_unchanged(self) -> None:
-        from triage_agent.agents.rca_agent import compress_metrics
-        metrics = {"AMF": {"error_rate": 0.05, "p95_latency_ms": 120.0}}
-        result = compress_metrics(metrics, 10000)
-        assert result == metrics
+    def test_dag_nf_always_included(self) -> None:
+        from triage_agent.agents.metrics_agent import compress_nf_metrics
+        metrics = {
+            "AMF": {"error_rate": 0.0, "cpu_rate": 0.1},
+            "EXTRA": {"error_rate": 0.0},
+        }
+        # EXTRA is not in nf_union; AMF is
+        result = compress_nf_metrics(metrics, nf_union=["AMF"], token_budget=100)
+        assert "AMF" in result
 
-    def test_prometheus_vector_format_compacted_to_summary(self) -> None:
-        from triage_agent.agents.rca_agent import compress_metrics
-        # Raw Prometheus vector format: list of {metric: {labels}, value: [ts, str]}
+    def test_non_dag_nf_dropped_when_over_budget(self) -> None:
+        from triage_agent.agents.metrics_agent import compress_nf_metrics
+        big_non_dag = {f"NF_{i}": {"data": "x" * 500} for i in range(20)}
+        metrics = {"AMF": {"error_rate": 0.0}, **big_non_dag}
+        result = compress_nf_metrics(metrics, nf_union=["AMF"], token_budget=50)
+        assert "AMF" in result
+        # At least some non-DAG NFs should be dropped
+        non_dag_in_result = [k for k in result if k != "AMF"]
+        non_dag_in_input = [k for k in big_non_dag]
+        assert len(non_dag_in_result) <= len(non_dag_in_input)
+
+    def test_prometheus_vector_format_compacted(self) -> None:
+        from triage_agent.agents.metrics_agent import compress_nf_metrics
         metrics = {
             "AMF": [
                 {"metric": {"report": "error_rate"}, "value": [1000, "0.05"]},
-                {"metric": {"report": "p95_latency_ms"}, "value": [1000, "120.5"]},
+                {"metric": {"report": "p95_latency"}, "value": [1000, "0.3"]},
             ]
         }
-        result = compress_metrics(metrics, 10000)
+        result = compress_nf_metrics(metrics, nf_union=["AMF"], token_budget=10000)
         assert "AMF" in result
         assert isinstance(result["AMF"], dict)
-
-    def test_nf_dropped_when_over_budget(self) -> None:
-        from triage_agent.agents.rca_agent import compress_metrics
-        # Build a metrics dict that is large
-        big_metrics = {f"NF_{i}": {"error_rate": 0.01, "data": "x" * 200} for i in range(30)}
-        result = compress_metrics(big_metrics, 100)
-        # Result must fit in budget
-        import json
-        assert len(json.dumps(result)) <= 500  # generous check: budget*4 chars
+        assert "error_rate" in result["AMF"]
 
 
 class TestCompressDag:

@@ -609,3 +609,29 @@ class TestLangSmithConfig:
                 langchain_project="config-value",
             )
             assert os.environ.get("LANGCHAIN_PROJECT") == "pre-existing"
+
+
+class TestArtifactsConfig:
+    """Tests for artifacts_dir and nf_latency_threshold_seconds fields."""
+
+    def test_artifacts_dir_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.artifacts_dir == "artifacts"
+
+    def test_artifacts_dir_from_env(self) -> None:
+        with patch.dict(os.environ, {**_CLEAN_ENV, "ARTIFACTS_DIR": "/tmp/data"}, clear=True):
+            config = TriageAgentConfig()
+        assert config.artifacts_dir == "/tmp/data"
+
+    def test_nf_latency_threshold_default(self) -> None:
+        with patch.dict(os.environ, _CLEAN_ENV, clear=True):
+            config = TriageAgentConfig(llm_api_key="test-key")
+        assert config.nf_latency_threshold_seconds == 1.0
+
+    def test_nf_latency_threshold_from_env(self) -> None:
+        with patch.dict(
+            os.environ, {**_CLEAN_ENV, "NF_LATENCY_THRESHOLD_SECONDS": "2.5"}, clear=True
+        ):
+            config = TriageAgentConfig()
+        assert config.nf_latency_threshold_seconds == 2.5

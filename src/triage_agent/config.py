@@ -222,6 +222,14 @@ class TriageAgentConfig(BaseSettings):
     langchain_project: str = "5g-triage-agent"
     langchain_endpoint: str = "https://api.smith.langchain.com"
 
+    # Directory for per-incident artifact snapshots (pre/post filter JSON files).
+    # Created automatically if absent. Relative paths are resolved from the CWD.
+    artifacts_dir: str = "artifacts"
+
+    # Latency threshold (seconds) above which an NF is considered degraded.
+    # Used by compress_nf_metrics to detect high-latency conditions.
+    nf_latency_threshold_seconds: float = 1.0
+
     # Application version returned in API metadata endpoints.
     # Should match pyproject.toml; update on each release.
     app_version: str = "3.2.0"

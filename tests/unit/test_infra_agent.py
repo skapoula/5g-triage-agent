@@ -697,14 +697,14 @@ class TestInfraAgentFunction:
     def test_sets_infra_findings_dict(
         self, sample_initial_state: TriageState
     ) -> None:
-        """infra_agent must populate infra_findings with expected keys."""
+        """infra_agent returns a compressed infra_findings dict.
+
+        When MCP is not wired, metrics are empty → infra_score == 0.0 →
+        compress_infra_findings_for_agent returns the healthy sentinel dict.
+        """
         state = infra_agent(sample_initial_state)
         findings = state["infra_findings"]
         assert isinstance(findings, dict)
-        assert "pod_restarts" in findings
-        assert "oom_kills" in findings
-        assert "resource_usage" in findings
-        assert "node_health" in findings
-        assert "concurrent_failures" in findings
-        assert "critical_events" in findings
+        # Empty metrics → healthy sentinel
+        assert findings == {"status": "all_pods_healthy"}
 

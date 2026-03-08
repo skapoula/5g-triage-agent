@@ -13,7 +13,7 @@ from langsmith import traceable
 from triage_agent.config import get_config
 from triage_agent.mcp.client import MCPClient, MCPQueryError, MCPTimeoutError
 from triage_agent.state import TriageState
-from triage_agent.utils import parse_timestamp
+from triage_agent.utils import count_tokens, parse_timestamp, save_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +127,85 @@ async def _fetch_prometheus_metrics(
     return results
 
 
+def compress_nf_metrics(
+    metrics: dict[str, Any],
+    nf_union: list[str],
+    token_budget: int,
+) -> dict[str, Any]:
+    """Compress NF metrics with DAG-NF protection.
+
+    Compacts Prometheus vector entries (list of {metric, value} dicts) to a
+    compact summary dict ({NF: {metric_name: float}}).
+
+    DAG-flow NFs (in nf_union) are ALWAYS included, even when all metrics are
+    nominal. Non-DAG NFs are added while the serialised result stays within
+    token_budget; they are silently dropped when the budget is exceeded.
+
+    If DAG NFs alone exceed token_budget, a WARNING is logged and they are
+    forwarded anyway — correctness takes priority over budget.
+    """
+    if not metrics:
+        return {}
+
+    nf_union_lower: set[str] = {nf.lower() for nf in nf_union}
+
+    def _compact(entries: Any) -> Any:
+        """Collapse Prometheus vector entries → {metric_key: float} summary."""
+        if not isinstance(entries, list):
+            return entries
+        summary: dict[str, float] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            labels = entry.get("metric", {})
+            value_pair = entry.get("value", [None, None])
+            # Prefer explicit 'report' label (set by label_replace in PromQL),
+            # then fall back to the metric __name__.
+            key = labels.get("report") or labels.get("__name__") or ""
+            try:
+                val = float(value_pair[1]) if len(value_pair) > 1 else 0.0
+            except (TypeError, ValueError):
+                val = 0.0
+            if key:
+                summary[key] = max(summary.get(key, val), val)
+        return summary if summary else entries
+
+    compacted = {nf: _compact(data) for nf, data in metrics.items()}
+
+    dag_nfs = {nf: data for nf, data in compacted.items() if nf.lower() in nf_union_lower}
+    non_dag_nfs = {
+        nf: data for nf, data in compacted.items() if nf.lower() not in nf_union_lower
+    }
+
+    # DAG NFs always included
+    result: dict[str, Any] = dict(dag_nfs)
+
+    dag_tokens = count_tokens(str(result))
+    if dag_tokens > token_budget:
+        logger.warning(
+            "DAG NF metrics exceed token budget (%d tokens), forwarding anyway for correctness",
+            dag_tokens,
+        )
+        return result
+
+    # Add non-DAG NFs while within budget
+    for nf, data in non_dag_nfs.items():
+        candidate = {**result, nf: data}
+        if count_tokens(str(candidate)) <= token_budget:
+            result = candidate
+
+    return result
+
+
 @traceable(name="NfMetricsAgent")
 def metrics_agent(state: TriageState) -> dict[str, Any]:
     """NfMetricsAgent entry point. Pure MCP query, no LLM."""
     nf_union = state.get("nf_union") or []
     if not nf_union:
         return {"metrics": {}}
+
+    cfg = get_config()
+    incident_id = state["incident_id"]
     alert_time = parse_timestamp(state["alert"]["startsAt"])
 
     queries = build_nf_queries(nf_union)
@@ -150,6 +223,16 @@ def metrics_agent(state: TriageState) -> dict[str, Any]:
                 exc_info=True,
             )
 
+    raw_metrics = organize_metrics_by_nf(raw_results, nf_union)
+
+    # Save pre-filter snapshot (non-blocking, non-fatal)
+    save_artifact(incident_id, "pre_filter_metrics.json", raw_metrics, cfg.artifacts_dir)
+
+    compressed = compress_nf_metrics(raw_metrics, nf_union, cfg.rca_token_budget_metrics)
+
+    # Save post-filter snapshot
+    save_artifact(incident_id, "post_filter_metrics.json", compressed, cfg.artifacts_dir)
+
     # Return only the key this agent writes — avoids LangGraph parallel-merge conflict
     # with logs_agent and traces_agent (all three fan out from dag_mapper in parallel).
-    return {"metrics": organize_metrics_by_nf(raw_results, nf_union)}
+    return {"metrics": compressed}

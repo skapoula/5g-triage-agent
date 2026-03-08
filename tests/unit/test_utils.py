@@ -1,4 +1,14 @@
-from triage_agent.utils import extract_log_level, parse_loki_response, parse_timestamp
+import json
+import time
+from pathlib import Path
+
+from triage_agent.utils import (
+    count_tokens,
+    extract_log_level,
+    parse_loki_response,
+    parse_timestamp,
+    save_artifact,
+)
 
 
 def test_parse_timestamp_utc():
@@ -93,3 +103,64 @@ def test_parse_loki_response_multiple_streams():
     assert len(logs) == 3
     assert logs[0]["pod"] == "amf-a"
     assert logs[2]["pod"] == "smf-b"
+
+
+# ---------------------------------------------------------------------------
+# count_tokens
+# ---------------------------------------------------------------------------
+
+
+def test_count_tokens_empty_string_returns_one():
+    assert count_tokens("") == 1
+
+
+def test_count_tokens_400_chars_returns_100():
+    assert count_tokens("a" * 400) == 100
+
+
+def test_count_tokens_four_char_boundary():
+    assert count_tokens("abcd") == 1
+
+
+def test_count_tokens_eight_chars_returns_two():
+    assert count_tokens("abcdefgh") == 2
+
+
+# ---------------------------------------------------------------------------
+# save_artifact
+# ---------------------------------------------------------------------------
+
+
+def test_save_artifact_writes_json_file(tmp_path: Path) -> None:
+    """save_artifact should write valid JSON to artifacts_dir/incident_id/name."""
+    data = {"key": "value", "count": 42}
+    save_artifact("inc-001", "test.json", data, str(tmp_path))
+
+    # The write is asynchronous; wait briefly for the background thread
+    deadline = time.monotonic() + 3.0
+    target = tmp_path / "inc-001" / "test.json"
+    while not target.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    assert target.exists(), "Artifact file was not written"
+    assert json.loads(target.read_text()) == data
+
+
+def test_save_artifact_creates_incident_dir(tmp_path: Path) -> None:
+    """save_artifact must create the incident subdirectory if absent."""
+    save_artifact("new-incident", "snap.json", {"x": 1}, str(tmp_path))
+
+    deadline = time.monotonic() + 3.0
+    target = tmp_path / "new-incident" / "snap.json"
+    while not target.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    assert (tmp_path / "new-incident").is_dir()
+
+
+def test_save_artifact_does_not_raise_on_bad_path() -> None:
+    """save_artifact must silently swallow errors — never raise."""
+    # Use an invalid path (root-owned directory) — should not raise
+    save_artifact("inc", "x.json", {"a": 1}, "/proc/triage_test_nonexistent")
+    # Give background thread time to attempt and fail
+    time.sleep(0.1)

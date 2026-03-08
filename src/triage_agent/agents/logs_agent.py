@@ -20,7 +20,7 @@ from langsmith import traceable
 from triage_agent.config import get_config
 from triage_agent.mcp.client import MCPClient
 from triage_agent.state import TriageState
-from triage_agent.utils import parse_loki_response, parse_timestamp
+from triage_agent.utils import count_tokens, parse_loki_response, parse_timestamp, save_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +228,82 @@ def build_loki_queries_from_dags(
 # --- Agent entry point ---
 
 
+def compress_nf_logs(
+    logs: dict[str, Any],
+    nf_union: list[str],
+    token_budget: int,
+) -> dict[str, Any]:
+    """Compress NF logs with DAG-NF protection.
+
+    DAG-flow NFs (lowercase match against nf_union) — ALL entries kept,
+    messages are NEVER truncated.
+
+    Non-DAG NFs — keep only entries that are qualifying (ERROR/WARN/FATAL level
+    or matched against a DAG phase/pattern). NFs with no qualifying entries
+    are omitted entirely.
+
+    Budget enforcement: non-DAG entries are evicted entry-by-entry (partial NF
+    inclusion is allowed); DAG NF keys are never removed from the result even
+    if the total is over budget (a WARNING is logged in that case).
+
+    Messages are NEVER truncated for either NF type.
+    """
+    if not logs:
+        return {}
+
+    nf_union_lower: set[str] = {nf.lower() for nf in nf_union}
+
+    def _is_qualifying(entry: dict[str, Any]) -> bool:
+        """Non-DAG entry qualifies when ERROR/WARN/FATAL or DAG-matched."""
+        if entry.get("matched_phase") or entry.get("matched_pattern"):
+            return True
+        return str(entry.get("level", "")).upper() in ("ERROR", "WARN", "FATAL")
+
+    dag_nf_logs: dict[str, list[dict[str, Any]]] = {}
+    non_dag_nf_logs: dict[str, list[dict[str, Any]]] = {}
+
+    for nf, entries in logs.items():
+        if not isinstance(entries, list):
+            continue
+        if nf.lower() in nf_union_lower:
+            dag_nf_logs[nf] = list(entries)
+        else:
+            qualifying = [e for e in entries if _is_qualifying(e)]
+            if qualifying:
+                non_dag_nf_logs[nf] = qualifying
+
+    # DAG NFs always included (never truncated)
+    result: dict[str, Any] = dict(dag_nf_logs)
+
+    dag_tokens = count_tokens(str(result))
+    if dag_tokens > token_budget:
+        logger.warning(
+            "DAG NF logs exceed token budget (%d tokens), forwarding DAG NFs anyway",
+            dag_tokens,
+        )
+        return result
+
+    # Add non-DAG NFs with entry-level eviction (partial inclusion allowed)
+    for nf, entries in non_dag_nf_logs.items():
+        # Try to add the full NF block
+        candidate = {**result, nf: entries}
+        if count_tokens(str(candidate)) <= token_budget:
+            result = candidate
+            continue
+        # Partial: add entries one-by-one until budget is reached
+        partial: list[dict[str, Any]] = []
+        for entry in entries:
+            trial = {**result, nf: partial + [entry]}
+            if count_tokens(str(trial)) <= token_budget:
+                partial.append(entry)
+            else:
+                break
+        if partial:
+            result[nf] = partial
+
+    return result
+
+
 @traceable(name="NfLogsAgent")
 def logs_agent(state: TriageState) -> dict[str, Any]:
     """NfLogsAgent entry point. Pure MCP/HTTP query, no LLM.
@@ -241,6 +317,8 @@ def logs_agent(state: TriageState) -> dict[str, Any]:
     if not dags:
         return {"logs": {}}
     cfg = get_config()
+    nf_union = state.get("nf_union") or []
+    incident_id = state["incident_id"]
     alert_time = parse_timestamp(state["alert"]["startsAt"])
     start = int(alert_time - cfg.alert_lookback_seconds)
     end = int(alert_time + cfg.alert_lookahead_seconds)
@@ -288,4 +366,14 @@ def logs_agent(state: TriageState) -> dict[str, Any]:
         "all_nfs": [],
         "phases": [p for dag in dags for p in dag.get("phases", [])],
     }
-    return {"logs": organize_and_annotate_logs(logs_raw, combined_dag)}
+    raw_logs = organize_and_annotate_logs(logs_raw, combined_dag)
+
+    # Save pre-filter snapshot (non-blocking, non-fatal)
+    save_artifact(incident_id, "pre_filter_logs.json", raw_logs, cfg.artifacts_dir)
+
+    compressed = compress_nf_logs(raw_logs, nf_union, cfg.rca_token_budget_logs)
+
+    # Save post-filter snapshot
+    save_artifact(incident_id, "post_filter_logs.json", compressed, cfg.artifacts_dir)
+
+    return {"logs": compressed}
