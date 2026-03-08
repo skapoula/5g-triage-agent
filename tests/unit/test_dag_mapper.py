@@ -162,7 +162,7 @@ class TestDagMapperAgent:
             max_attempts=2,
             needs_more_evidence=False,
             evidence_gaps=None,
-            second_attempt_complete=False,
+            compressed_evidence=None,
             final_report=None,
         )
 
