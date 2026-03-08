@@ -1,7 +1,10 @@
+import concurrent.futures
 import json
 import time
 from pathlib import Path
+from typing import Any
 
+from triage_agent import utils as utils_module
 from triage_agent.utils import (
     compress_dag,
     compress_trace_deviations,
@@ -199,3 +202,22 @@ class TestCompressTraceDeviations:
         devs = {"dag_a": [{"d": i} for i in range(10)]}
         result = compress_trace_deviations(devs, 10_000)
         assert len(result["dag_a"]) <= 3   # default rca_max_deviations_per_dag
+
+
+class TestSaveArtifactSingleton:
+    def test_same_executor_reused_across_calls(self, tmp_path: Any) -> None:
+        """save_artifact reuses the module-level executor, not creating a new one per call."""
+        executor_before = utils_module._artifact_executor
+        utils_module.save_artifact("inc1", "a.json", {"k": 1}, str(tmp_path))
+        utils_module.save_artifact("inc1", "b.json", {"k": 2}, str(tmp_path))
+        executor_after = utils_module._artifact_executor
+        assert executor_before is executor_after
+
+    def test_artifact_files_are_written(self, tmp_path: Any) -> None:
+        """save_artifact writes the JSON file."""
+        import time, json
+        utils_module.save_artifact("inc2", "test.json", {"key": "value"}, str(tmp_path))
+        time.sleep(0.2)
+        artifact = tmp_path / "inc2" / "test.json"
+        assert artifact.exists()
+        assert json.loads(artifact.read_text())["key"] == "value"

@@ -62,17 +62,21 @@ def _write_artifact_sync(
         logger.warning("Failed to save artifact %s/%s: %s", incident_id, name, exc)
 
 
+# Module-level executor: avoids spawning a new thread per artifact write
+_artifact_executor: concurrent.futures.ThreadPoolExecutor = (
+    concurrent.futures.ThreadPoolExecutor(max_workers=2)
+)
+
+
 def save_artifact(
     incident_id: str, name: str, data: Any, artifacts_dir: str
 ) -> None:
     """Fire-and-forget artifact write. Non-blocking, non-fatal.
 
-    Spawns a one-shot thread so the calling agent is never delayed by disk I/O.
+    Submits to a module-level ThreadPoolExecutor so no new thread is created per call.
     Failures are logged as warnings and silently swallowed.
     """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    executor.submit(_write_artifact_sync, incident_id, name, data, artifacts_dir)
-    executor.shutdown(wait=False)
+    _artifact_executor.submit(_write_artifact_sync, incident_id, name, data, artifacts_dir)
 
 
 def compress_dag(
