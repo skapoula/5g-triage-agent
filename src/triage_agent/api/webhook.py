@@ -133,7 +133,7 @@ async def health_check() -> HealthResponse:
         prometheus_ok = await mcp.health_check_prometheus()
         loki_ok = await mcp.health_check_loki()
 
-    overall_status = "healthy" if (memgraph_ok and prometheus_ok) else "degraded"
+    overall_status = "healthy" if (memgraph_ok and prometheus_ok and loki_ok) else "degraded"
 
     return HealthResponse(
         status=overall_status,

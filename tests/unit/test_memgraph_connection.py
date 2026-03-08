@@ -483,6 +483,46 @@ def test_ingest_captured_trace_uses_message_field() -> None:
     assert "event.action" not in q
 
 
+@patch("triage_agent.memgraph.connection.time.sleep", return_value=None)
+def test_execute_cypher_write_retries_on_service_unavailable(mock_sleep: MagicMock) -> None:
+    """execute_cypher_write retries on ServiceUnavailable and succeeds on 3rd attempt."""
+    conn = MemgraphConnection.__new__(MemgraphConnection)
+    conn._max_retries = 3
+
+    mock_session = MagicMock()
+    mock_session.__enter__ = MagicMock(return_value=mock_session)
+    mock_session.__exit__ = MagicMock(return_value=False)
+    mock_session.run.side_effect = [
+        ServiceUnavailable("down"),
+        ServiceUnavailable("down"),
+        None,  # succeeds on 3rd attempt
+    ]
+    mock_driver = MagicMock()
+    mock_driver.session.return_value = mock_session
+    conn._driver = mock_driver
+
+    conn.execute_cypher_write("MERGE (n:Test {id: 1})")
+    assert mock_session.run.call_count == 3
+
+
+@patch("triage_agent.memgraph.connection.time.sleep", return_value=None)
+def test_execute_cypher_write_raises_after_max_retries(mock_sleep: MagicMock) -> None:
+    """execute_cypher_write raises after all retries are exhausted."""
+    conn = MemgraphConnection.__new__(MemgraphConnection)
+    conn._max_retries = 2
+
+    mock_session = MagicMock()
+    mock_session.__enter__ = MagicMock(return_value=mock_session)
+    mock_session.__exit__ = MagicMock(return_value=False)
+    mock_session.run.side_effect = ServiceUnavailable("always down")
+    mock_driver = MagicMock()
+    mock_driver.session.return_value = mock_session
+    conn._driver = mock_driver
+
+    with pytest.raises(ServiceUnavailable):
+        conn.execute_cypher_write("MERGE (n:Test {id: 1})")
+
+
 def test_detect_deviation_uses_message_field() -> None:
     """Cypher must compare event.message, not event.action."""
     from unittest.mock import MagicMock

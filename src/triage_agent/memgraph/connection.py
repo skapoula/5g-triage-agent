@@ -52,10 +52,23 @@ class MemgraphConnection:
         self,
         query: str,
         params: dict[str, Any] | None = None,
+        max_retries: int | None = None,
     ) -> None:
-        """Execute a write Cypher query."""
-        with self._driver.session() as session:
-            session.run(query, params or {})
+        """Execute a write Cypher query with retry logic."""
+        retries = max_retries if max_retries is not None else self._max_retries
+        last_error: Exception | None = None
+        for attempt in range(retries):
+            try:
+                with self._driver.session() as session:
+                    session.run(query, params or {})
+                    return
+            except (ServiceUnavailable, TransientError) as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(2**attempt)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Unexpected error in execute_cypher_write")  # pragma: no cover
 
     def health_check(self) -> bool:
         """Check if Memgraph is accessible."""

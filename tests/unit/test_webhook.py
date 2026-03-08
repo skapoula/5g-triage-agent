@@ -272,3 +272,46 @@ class TestAlertModels:
             alerts_received=1,
         )
         assert resp.incident_id == "test-001"
+
+
+def test_health_check_degraded_when_loki_down() -> None:
+    """Health check returns degraded when Loki is unavailable."""
+    mock_memgraph = MagicMock()
+    mock_memgraph.health_check.return_value = True
+
+    mock_mcp = AsyncMock()
+    mock_mcp.health_check_prometheus = AsyncMock(return_value=True)
+    mock_mcp.health_check_loki = AsyncMock(return_value=False)
+    mock_mcp.__aenter__ = AsyncMock(return_value=mock_mcp)
+    mock_mcp.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("triage_agent.memgraph.connection.get_memgraph", return_value=mock_memgraph), \
+         patch("triage_agent.mcp.client.MCPClient", return_value=mock_mcp):
+        client = TestClient(app)
+        resp = client.get("/health")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["loki"] is False
+    assert data["status"] == "degraded"
+
+
+def test_health_check_healthy_when_all_ok() -> None:
+    """Health check returns healthy when all services are up."""
+    mock_memgraph = MagicMock()
+    mock_memgraph.health_check.return_value = True
+
+    mock_mcp = AsyncMock()
+    mock_mcp.health_check_prometheus = AsyncMock(return_value=True)
+    mock_mcp.health_check_loki = AsyncMock(return_value=True)
+    mock_mcp.__aenter__ = AsyncMock(return_value=mock_mcp)
+    mock_mcp.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("triage_agent.memgraph.connection.get_memgraph", return_value=mock_memgraph), \
+         patch("triage_agent.mcp.client.MCPClient", return_value=mock_mcp):
+        client = TestClient(app)
+        resp = client.get("/health")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "healthy"
