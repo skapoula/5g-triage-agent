@@ -246,10 +246,19 @@ def compress_nf_logs(
     inclusion is allowed); DAG NF keys are never removed from the result even
     if the total is over budget (a WARNING is logged in that case).
 
-    Messages are NEVER truncated for either NF type.
+    Messages are truncated to cfg.rca_log_max_message_chars if they exceed that length.
     """
     if not logs:
         return {}
+
+    cfg = get_config()
+    max_chars = cfg.rca_log_max_message_chars
+
+    def _truncate(entry: dict[str, Any]) -> dict[str, Any]:
+        msg = entry.get("message", "")
+        if len(msg) > max_chars:
+            return {**entry, "message": msg[:max_chars] + "…"}
+        return entry
 
     nf_union_lower: set[str] = {nf.lower() for nf in nf_union}
 
@@ -266,9 +275,9 @@ def compress_nf_logs(
         if not isinstance(entries, list):
             continue
         if nf.lower() in nf_union_lower:
-            dag_nf_logs[nf] = list(entries)
+            dag_nf_logs[nf] = [_truncate(e) for e in entries]
         else:
-            qualifying = [e for e in entries if _is_qualifying(e)]
+            qualifying = [_truncate(e) for e in entries if _is_qualifying(e)]
             if qualifying:
                 non_dag_nf_logs[nf] = qualifying
 

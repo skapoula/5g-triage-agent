@@ -1219,3 +1219,32 @@ class TestLogsAgentMultiDag:
         result = logs_agent(state)
 
         assert result == {"logs": {}}
+
+
+class TestCompressNfLogsTruncation:
+    def test_long_messages_are_truncated(self) -> None:
+        """Messages longer than rca_log_max_message_chars are truncated."""
+        from unittest.mock import patch
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        from triage_agent.config import TriageAgentConfig
+
+        long_msg = "E " + "x" * 500
+        logs = {"AMF": [{"level": "ERROR", "message": long_msg, "matched_phase": None, "matched_pattern": None, "timestamp": 0}]}
+        with patch("triage_agent.agents.logs_agent.get_config") as mock_cfg:
+            mock_cfg.return_value = TriageAgentConfig(rca_log_max_message_chars=50, rca_token_budget_logs=10_000)
+            result = compress_nf_logs(logs, ["AMF"], 10_000)
+
+        assert len(result["AMF"][0]["message"]) <= 51  # 50 chars + ellipsis
+        assert result["AMF"][0]["message"].endswith("…")
+
+    def test_short_messages_are_not_truncated(self) -> None:
+        from unittest.mock import patch
+        from triage_agent.agents.logs_agent import compress_nf_logs
+        from triage_agent.config import TriageAgentConfig
+
+        logs = {"AMF": [{"level": "ERROR", "message": "short", "matched_phase": None, "matched_pattern": None, "timestamp": 0}]}
+        with patch("triage_agent.agents.logs_agent.get_config") as mock_cfg:
+            mock_cfg.return_value = TriageAgentConfig(rca_log_max_message_chars=200, rca_token_budget_logs=10_000)
+            result = compress_nf_logs(logs, ["AMF"], 10_000)
+
+        assert result["AMF"][0]["message"] == "short"
