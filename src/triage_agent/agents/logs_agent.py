@@ -49,23 +49,18 @@ def build_loki_queries(dag: dict[str, Any], core_namespace: str) -> list[str]:
     queries: list[str] = []
     for nf in dag["all_nfs"]:
         nf_lower = nf.lower()
+        label_sel = f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}}'
 
         # Base query: all ERROR/WARN/FATAL logs
-        queries.append(
-            f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "ERROR|WARN|FATAL"'
-        )
+        queries.append(f'{label_sel} |~ "ERROR|WARN|FATAL"')
 
         # Phase-specific pattern queries
         for phase in dag["phases"]:
             if nf in phase.get("actors", []):
-                queries.append(
-                    f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "{phase["success_log"]}"'
-                )
+                queries.append(f'{label_sel} |~ "{phase["success_log"]}"')
                 for pattern in phase.get("failure_patterns", []):
                     loki_pattern = pattern.replace("*", ".*")
-                    queries.append(
-                        f'{{k8s_namespace_name="{core_namespace}",k8s_pod_name=~".*{nf_lower}.*"}} |~ "(?i){loki_pattern}"'
-                    )
+                    queries.append(f'{label_sel} |~ "(?i){loki_pattern}"')
 
     return queries
 
