@@ -151,5 +151,5 @@ def metrics_agent(state: TriageState) -> dict[str, Any]:
             )
 
     # Return only the key this agent writes — avoids LangGraph parallel-merge conflict
-    # with infra_agent (both start from START in the same step).
+    # with logs_agent and traces_agent (all three fan out from dag_mapper in parallel).
     return {"metrics": organize_metrics_by_nf(raw_results, nf_union)}

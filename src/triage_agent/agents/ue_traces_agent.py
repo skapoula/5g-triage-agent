@@ -216,35 +216,6 @@ def ingest_traces_to_memgraph(
         )
 
 
-def run_deviation_detection(
-    incident_id: str, dag_name: str
-) -> list[dict[str, Any]]:
-    """Compare ingested traces against reference DAG in Memgraph.
-
-    Queries all captured IMSIs for this incident, then runs per-IMSI
-    deviation detection against the reference DAG.
-
-    Returns list of deviation dicts (one per IMSI that deviates).
-    """
-    conn = get_memgraph()
-
-    # Get all captured IMSIs for this incident
-    imsi_records = conn.execute_cypher(
-        "MATCH (t:CapturedTrace {incident_id: $incident_id}) "
-        "RETURN t.imsi AS imsi",
-        {"incident_id": incident_id},
-    )
-
-    deviations: list[dict[str, Any]] = []
-    for record in imsi_records:
-        imsi = record["imsi"]
-        deviation = conn.detect_deviation(incident_id, imsi, dag_name)
-        if deviation is not None:
-            deviations.append(deviation)
-
-    return deviations
-
-
 def run_deviation_detection_for_dag(
     incident_id: str, dag_name: str
 ) -> list[dict[str, Any]]:

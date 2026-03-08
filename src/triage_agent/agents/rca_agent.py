@@ -478,4 +478,8 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
         state["needs_more_evidence"] = True
         state["evidence_gaps"] = identify_evidence_gaps(state)
 
+    # Mark second attempt complete if this was a retry
+    if state.get("attempt_count", 1) > 1:
+        state["second_attempt_complete"] = True
+
     return state

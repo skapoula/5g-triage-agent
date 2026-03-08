@@ -5,7 +5,7 @@ Covers:
   - per_imsi_logql: builds LogQL for a single IMSI
   - contract_imsi_trace: contracts raw logs into structured trace
   - ingest_traces_to_memgraph: ingests traces into Memgraph
-  - run_deviation_detection: detects deviations via Cypher
+  - run_deviation_detection_for_dag: detects deviations via Cypher
   - discover_and_trace_imsis: entry point, updates state
   - Edge cases: no IMSIs found, Memgraph connection failure
 """
@@ -21,7 +21,7 @@ from triage_agent.agents.ue_traces_agent import (
     extract_unique_imsis,
     ingest_traces_to_memgraph,
     per_imsi_logql,
-    run_deviation_detection,
+    run_deviation_detection_for_dag,
 )
 from triage_agent.state import TriageState
 
@@ -391,12 +391,12 @@ class TestIngestTracesToMemgraph:
 
 
 # ===========================================================================
-# run_deviation_detection
+# run_deviation_detection_for_dag
 # ===========================================================================
 
 
 class TestRunDeviationDetection:
-    """Tests for run_deviation_detection().
+    """Tests for run_deviation_detection_for_dag().
 
     Uses mock_memgraph to verify Cypher-based deviation queries.
     """
@@ -416,7 +416,7 @@ class TestRunDeviationDetection:
         }
         mock_get_memgraph.return_value = mock_conn
 
-        result = run_deviation_detection("test-incident-001", "Registration_General")
+        result = run_deviation_detection_for_dag("test-incident-001", "Registration_General")
         assert isinstance(result, list)
 
     @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
@@ -442,7 +442,7 @@ class TestRunDeviationDetection:
         ]
         mock_get_memgraph.return_value = mock_conn
 
-        result = run_deviation_detection("test-incident-001", "Registration_General")
+        result = run_deviation_detection_for_dag("test-incident-001", "Registration_General")
         assert len(result) == 1
         assert result[0]["deviation_point"] == 9
 
@@ -455,7 +455,7 @@ class TestRunDeviationDetection:
         mock_conn.execute_cypher.return_value = []
         mock_get_memgraph.return_value = mock_conn
 
-        result = run_deviation_detection("test-incident-001", "Registration_General")
+        result = run_deviation_detection_for_dag("test-incident-001", "Registration_General")
         assert result == []
 
     @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
@@ -468,7 +468,7 @@ class TestRunDeviationDetection:
         mock_get_memgraph.return_value = mock_conn
 
         with pytest.raises(ConnectionError):
-            run_deviation_detection("test-incident-001", "Registration_General")
+            run_deviation_detection_for_dag("test-incident-001", "Registration_General")
 
 
 # ===========================================================================
@@ -604,6 +604,14 @@ class TestDiscoverAndTraceImsis:
 # ===========================================================================
 # Multi-procedure deviation and delta return tests
 # ===========================================================================
+
+
+def test_run_deviation_detection_removed():
+    """run_deviation_detection is dead code and must not exist."""
+    import triage_agent.agents.ue_traces_agent as uta
+    assert not hasattr(uta, "run_deviation_detection"), (
+        "run_deviation_detection is dead code — remove it"
+    )
 
 
 class TestDiscoverAndTraceImsisDeltaReturn:

@@ -679,6 +679,42 @@ def test_generate_final_report_empty_procedure_names():
     assert report["procedure_name"] == "unknown"
 
 
+def test_second_attempt_complete_set_on_retry(monkeypatch):
+    import uuid
+    import triage_agent.agents.rca_agent as ra
+    from triage_agent.graph import get_initial_state
+    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
+    state = get_initial_state(alert, str(uuid.uuid4()))
+    state["attempt_count"] = 2
+    state["dags"] = []
+    state["procedure_names"] = []
+    def fake_llm(prompt, timeout=None):
+        return {"layer": "application", "root_nf": "AMF", "failure_mode": "timeout",
+                "failed_phase": None, "confidence": 0.9, "evidence_chain": [],
+                "alternative_hypotheses": [], "reasoning": "test"}
+    monkeypatch.setattr(ra, "llm_analyze_evidence", fake_llm)
+    result = ra.rca_agent_first_attempt(state)
+    assert result["second_attempt_complete"] is True
+
+
+def test_second_attempt_complete_false_on_first_attempt(monkeypatch):
+    import uuid
+    import triage_agent.agents.rca_agent as ra
+    from triage_agent.graph import get_initial_state
+    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
+    state = get_initial_state(alert, str(uuid.uuid4()))
+    state["attempt_count"] = 1
+    state["dags"] = []
+    state["procedure_names"] = []
+    def fake_llm(prompt, timeout=None):
+        return {"layer": "application", "root_nf": "AMF", "failure_mode": "timeout",
+                "failed_phase": None, "confidence": 0.9, "evidence_chain": [],
+                "alternative_hypotheses": [], "reasoning": "test"}
+    monkeypatch.setattr(ra, "llm_analyze_evidence", fake_llm)
+    result = ra.rca_agent_first_attempt(state)
+    assert result["second_attempt_complete"] is False
+
+
 def test_rca_prompt_includes_dag_content(monkeypatch):
     """RCA prompt must include actual DAG content, not null."""
     import json, uuid
