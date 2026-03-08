@@ -239,12 +239,22 @@ def run_deviation_detection_for_dag(
 # ---------------------------------------------------------------------------
 
 
+def _imsis_from_state_logs(logs: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """Extract IMSIs from already-fetched state.logs (avoid duplicate Loki query)."""
+    entries: list[dict[str, Any]] = []
+    for nf_entries in logs.values():
+        for entry in nf_entries:
+            msg = entry.get("message") or entry.get("log") or ""
+            entries.append({"message": msg})
+    return extract_unique_imsis(entries)
+
+
 @traceable(name="UeTracesAgent")
-def discover_and_trace_imsis(state: TriageState) -> dict[str, Any]:
+def ue_traces_agent(state: TriageState) -> dict[str, Any]:
     """UeTracesAgent entry point. Pure MCP query + Memgraph, no LLM.
 
     Pipeline:
-      1. IMSI discovery pass (Loki query in alarm window)
+      1. IMSI discovery (from state.logs if available, else Loki query)
       2. Per-IMSI trace construction (wider window for full procedure)
       3. Memgraph ingestion + per-procedure deviation detection
     """
@@ -255,16 +265,21 @@ def discover_and_trace_imsis(state: TriageState) -> dict[str, Any]:
     cfg = get_config()
     alert_time = int(parse_timestamp(state["alert"]["startsAt"]))
 
-    # 1. Discovery query — find all active IMSIs in alarm window.
-    discovery_logql = (
-        f'{{k8s_namespace_name="{cfg.core_namespace}"}} |~ "(?i)imsi-"'
-    )
-    discovery_logs = loki_query(
-        discovery_logql,
-        start=alert_time - cfg.imsi_discovery_window_seconds,
-        end=alert_time + cfg.imsi_discovery_window_seconds,
-    )
-    imsis = extract_unique_imsis(discovery_logs)
+    # 1. Try state.logs first to avoid duplicate Loki query.
+    state_logs = state.get("logs") or {}
+    imsis = _imsis_from_state_logs(state_logs) if state_logs else []
+
+    if not imsis:
+        # Fall back to broad Loki discovery query.
+        discovery_logql = (
+            f'{{k8s_namespace_name="{cfg.core_namespace}"}} |~ "(?i)imsi-"'
+        )
+        discovery_logs = loki_query(
+            discovery_logql,
+            start=alert_time - cfg.imsi_discovery_window_seconds,
+            end=alert_time + cfg.imsi_discovery_window_seconds,
+        )
+        imsis = extract_unique_imsis(discovery_logs)
 
     # 2. Per-IMSI trace construction (wider window: lookback + lookahead)
     traces: list[dict[str, Any]] = []

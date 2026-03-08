@@ -708,3 +708,18 @@ class TestInfraAgentFunction:
         # Empty metrics → healthy sentinel
         assert findings == {"status": "all_pods_healthy"}
 
+
+def test_infra_agent_prometheus_failure(sample_initial_state: TriageState) -> None:
+    """When parse_timestamp raises, infra_agent returns safe defaults."""
+    from unittest.mock import patch
+
+    with patch(
+        "triage_agent.agents.infra_agent.parse_timestamp",
+        side_effect=ValueError("bad timestamp"),
+    ):
+        result = infra_agent(sample_initial_state)
+
+    assert result["infra_checked"] is True
+    assert result["infra_score"] == 0.0
+    assert result["infra_findings"] is None
+

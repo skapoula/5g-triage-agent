@@ -56,7 +56,6 @@ class TestTriageStateFields:
         assert "attempt_count" in hints
         assert "max_attempts" in hints
         assert "needs_more_evidence" in hints
-        assert "second_attempt_complete" in hints
         assert "final_report" in hints
 
     def test_can_instantiate_with_all_fields(self) -> None:
@@ -87,7 +86,7 @@ class TestTriageStateFields:
             attempt_count=1,
             max_attempts=2,
             needs_more_evidence=False,
-            second_attempt_complete=False,
+
             final_report=None,
         )
         assert state["incident_id"] == "test-001"
@@ -136,7 +135,7 @@ class TestTriageStateFields:
             attempt_count=1,
             max_attempts=2,
             needs_more_evidence=False,
-            second_attempt_complete=False,
+
             final_report=None,
         )
         state["infra_checked"] = True

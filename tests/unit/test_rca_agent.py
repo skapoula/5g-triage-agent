@@ -154,10 +154,7 @@ class TestRcaAgentFirstAttempt:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ) as mock_llm, patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "test"},
-        ):
+        ) as mock_llm:
             result = rca_agent_first_attempt(state)
 
             # Verify llm_analyze_evidence was called
@@ -189,7 +186,6 @@ class TestRcaAgentFirstAttempt:
 
             # Confidence 0.85 >= 0.70, should NOT need more evidence
             assert result["needs_more_evidence"] is False
-            assert result["final_report"] is not None
 
     def test_sets_needs_more_evidence_true_when_low_confidence(
         self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
@@ -275,9 +271,6 @@ class TestRCAOutputStructure:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ), patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "test"},
         ):
             result = rca_agent_first_attempt(state)
 
@@ -313,15 +306,11 @@ class TestConfidenceThresholdLogic:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ), patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "test"},
         ):
             result = rca_agent_first_attempt(state)
 
             # Confidence 0.72 >= 0.70, should NOT need more evidence
             assert result["needs_more_evidence"] is False
-            assert result["final_report"] is not None
 
     def test_lowered_threshold_0_65_when_high_evidence_quality(
         self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
@@ -343,15 +332,11 @@ class TestConfidenceThresholdLogic:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ), patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "test"},
         ):
             result = rca_agent_first_attempt(state)
 
             # Confidence 0.67 >= 0.65 (lowered threshold), should NOT need more evidence
             assert result["needs_more_evidence"] is False
-            assert result["final_report"] is not None
 
     def test_needs_more_evidence_below_default_threshold(
         self, sample_initial_state: TriageState, sample_dag: dict[str, Any]
@@ -488,9 +473,6 @@ class TestEvidenceChainCitations:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ), patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "test"},
         ):
             result = rca_agent_first_attempt(state)
 
@@ -573,9 +555,6 @@ class TestStateUpdates:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ), patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "Infrastructure failure"},
         ):
             result = rca_agent_first_attempt(state)
 
@@ -606,9 +585,6 @@ class TestStateUpdates:
         with patch(
             "triage_agent.agents.rca_agent.llm_analyze_evidence",
             return_value=mock_analysis,
-        ), patch(
-            "triage_agent.agents.rca_agent.generate_final_report",
-            return_value={"summary": "test"},
         ):
             result = rca_agent_first_attempt(state)
 
@@ -643,71 +619,6 @@ def test_identify_evidence_gaps_empty_trace_deviations() -> None:
     assert "UE trace analysis needed" in gaps
 
 
-def test_generate_final_report_uses_procedure_names():
-    import uuid
-
-    from triage_agent.agents.rca_agent import generate_final_report
-    from triage_agent.graph import get_initial_state
-    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
-    state = get_initial_state(alert, str(uuid.uuid4()))
-    state["procedure_names"] = ["registration_general", "authentication_5g_aka"]
-    state["layer"] = "application"
-    state["root_nf"] = "AMF"
-    state["failure_mode"] = "timeout"
-    state["confidence"] = 0.85
-    report = generate_final_report(state)
-    assert report["procedure_name"] == "registration_general, authentication_5g_aka"
-    assert report["procedure_name"] != "unknown"
-
-
-def test_generate_final_report_empty_procedure_names():
-    import uuid
-
-    from triage_agent.agents.rca_agent import generate_final_report
-    from triage_agent.graph import get_initial_state
-    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
-    state = get_initial_state(alert, str(uuid.uuid4()))
-    state["procedure_names"] = None
-    report = generate_final_report(state)
-    assert report["procedure_name"] == "unknown"
-
-
-def test_second_attempt_complete_set_on_retry(monkeypatch):
-    import uuid
-
-    import triage_agent.agents.rca_agent as ra
-    from triage_agent.graph import get_initial_state
-    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
-    state = get_initial_state(alert, str(uuid.uuid4()))
-    state["attempt_count"] = 2
-    state["dags"] = []
-    state["procedure_names"] = []
-    def fake_llm(prompt, timeout=None):
-        return {"layer": "application", "root_nf": "AMF", "failure_mode": "timeout",
-                "failed_phase": None, "confidence": 0.9, "evidence_chain": [],
-                "alternative_hypotheses": [], "reasoning": "test"}
-    monkeypatch.setattr(ra, "llm_analyze_evidence", fake_llm)
-    result = ra.rca_agent_first_attempt(state)
-    assert result["second_attempt_complete"] is True
-
-
-def test_second_attempt_complete_false_on_first_attempt(monkeypatch):
-    import uuid
-
-    import triage_agent.agents.rca_agent as ra
-    from triage_agent.graph import get_initial_state
-    alert = {"labels": {"alertname": "test"}, "startsAt": "2024-01-01T12:00:00Z"}
-    state = get_initial_state(alert, str(uuid.uuid4()))
-    state["attempt_count"] = 1
-    state["dags"] = []
-    state["procedure_names"] = []
-    def fake_llm(prompt, timeout=None):
-        return {"layer": "application", "root_nf": "AMF", "failure_mode": "timeout",
-                "failed_phase": None, "confidence": 0.9, "evidence_chain": [],
-                "alternative_hypotheses": [], "reasoning": "test"}
-    monkeypatch.setattr(ra, "llm_analyze_evidence", fake_llm)
-    result = ra.rca_agent_first_attempt(state)
-    assert result["second_attempt_complete"] is False
 
 
 def test_rca_prompt_includes_dag_content(monkeypatch):

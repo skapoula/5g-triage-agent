@@ -6,6 +6,7 @@ from langsmith import traceable
 
 from triage_agent.config import get_config
 from triage_agent.state import TriageState
+from triage_agent.utils import save_artifact
 
 
 @traceable(name="EvidenceQuality")
@@ -35,4 +36,17 @@ def compute_evidence_quality(state: TriageState) -> dict[str, Any]:
     else:
         quality_score = cfg.eq_score_no_evidence       # No evidence
 
-    return {"evidence_quality_score": min(quality_score, 1.0)}
+    score = min(quality_score, 1.0)
+    save_artifact(
+        state.get("incident_id", "unknown"),
+        "evidence_quality.json",
+        {
+            "score": score,
+            "sources": available_types,
+            "metrics_present": "metrics" in available_types,
+            "logs_present": "logs" in available_types,
+            "traces_ready": "traces" in available_types,
+        },
+        cfg.artifacts_dir,
+    )
+    return {"evidence_quality_score": score}

@@ -313,6 +313,8 @@ def create_llm(
             api_key=SecretStr(api_key) if api_key else None,
             temperature=temperature,
             timeout=timeout,
+            max_tokens=4096,
+            streaming=True,
         )
     elif provider == "anthropic":
         try:
@@ -327,6 +329,8 @@ def create_llm(
             api_key=SecretStr(api_key) if api_key else None,  # type: ignore[arg-type]
             temperature=temperature,
             timeout=timeout,
+            max_tokens=4096,
+            streaming=True,
         )
     elif provider == "local":
         if not base_url:
@@ -341,6 +345,8 @@ def create_llm(
             base_url=base_url,
             temperature=temperature,
             timeout=timeout,
+            max_tokens=4096,
+            streaming=True,
         )
     else:
         raise ValueError(f"Unsupported llm_provider: '{provider}'")
@@ -411,33 +417,6 @@ def llm_analyze_evidence(prompt: str, timeout: int | None = None) -> dict[str, A
         raise
 
 
-def generate_final_report(state: TriageState) -> dict[str, Any]:
-    """Generate final RCA report from state.
-
-    Args:
-        state: Current triage state with RCA results
-
-    Returns:
-        Final report dictionary with summary and details
-    """
-    procedure_names = state.get("procedure_names") or []
-    return {
-        "incident_id": state["incident_id"],
-        "procedure_name": ", ".join(procedure_names) if procedure_names else "unknown",
-        "layer": state.get("layer", "unknown"),
-        "root_nf": state.get("root_nf", "unknown"),
-        "failure_mode": state.get("failure_mode", "unknown"),
-        "confidence": state.get("confidence", 0.0),
-        "evidence_chain": state.get("evidence_chain", []),
-        "summary": (
-            f"{state.get('layer', 'unknown').title()} layer failure: "
-            f"{state.get('failure_mode', 'unknown')} in {state.get('root_nf', 'unknown')} "
-            f"(confidence: {state.get('confidence', 0.0):.2f})"
-        ),
-        "infra_score": state.get("infra_score", 0.0),
-        "evidence_quality_score": state.get("evidence_quality_score", 0.0),
-    }
-
 
 def identify_evidence_gaps(state: TriageState) -> list[str]:
     """Identify what additional evidence is needed for higher confidence.
@@ -505,12 +484,11 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
 
     analysis = llm_analyze_evidence(prompt)
 
-    # Update state with analysis results
-    state["root_nf"] = analysis["root_nf"]
-    state["failure_mode"] = analysis["failure_mode"]
-    state["confidence"] = analysis["confidence"]
-    state["evidence_chain"] = analysis.get("evidence_chain", [])
-    state["layer"] = analysis.get("layer", "application")
+    root_nf = analysis["root_nf"]
+    failure_mode = analysis["failure_mode"]
+    confidence = analysis["confidence"]
+    evidence_chain = analysis.get("evidence_chain", [])
+    layer = analysis.get("layer", "application")
 
     # Decision logic: determine if more evidence is needed
     cfg = get_config()
@@ -518,24 +496,19 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
     if state.get("evidence_quality_score", 0.0) >= cfg.high_evidence_threshold:
         min_confidence = cfg.min_confidence_relaxed
 
-    if state["confidence"] >= min_confidence:
-        state["needs_more_evidence"] = False
-        state["final_report"] = generate_final_report(state)
+    if confidence >= min_confidence:
+        needs_more_evidence = False
+        evidence_gaps = None
     else:
-        state["needs_more_evidence"] = True
-        state["evidence_gaps"] = identify_evidence_gaps(state)
-
-    # Mark second attempt complete if this was a retry
-    second_attempt_complete = state.get("attempt_count", 1) > 1
+        needs_more_evidence = True
+        evidence_gaps = identify_evidence_gaps(state)
 
     return {
-        "root_nf": state["root_nf"],
-        "failure_mode": state["failure_mode"],
-        "confidence": state["confidence"],
-        "evidence_chain": state.get("evidence_chain", []),
-        "layer": state["layer"],
-        "needs_more_evidence": state["needs_more_evidence"],
-        "evidence_gaps": state.get("evidence_gaps"),
-        "second_attempt_complete": second_attempt_complete,
-        "final_report": state.get("final_report"),
+        "root_nf": root_nf,
+        "failure_mode": failure_mode,
+        "confidence": confidence,
+        "evidence_chain": evidence_chain,
+        "layer": layer,
+        "needs_more_evidence": needs_more_evidence,
+        "evidence_gaps": evidence_gaps,
     }

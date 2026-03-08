@@ -73,6 +73,10 @@ class TestFinalizeReport:
             "infra_score",
             "evidence_quality_score",
             "attempt_count",
+            "procedure_names",
+            "mapping_confidence",
+            "mapping_method",
+            "nf_union",
         }
 
         result = finalize_report(state)

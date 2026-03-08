@@ -343,50 +343,54 @@ def compress_infra_findings_for_agent(
 @traceable(name="InfraAgent")
 def infra_agent(state: TriageState) -> dict[str, Any]:
     """InfraAgent entry point. Rule-based, no LLM."""
-    cfg = get_config()
-    alert = state["alert"]
-    incident_id = state["incident_id"]
+    try:
+        cfg = get_config()
+        alert = state["alert"]
+        incident_id = state["incident_id"]
 
-    alert_time = parse_timestamp(alert["startsAt"])
-    time_window = (
-        alert_time - cfg.alert_lookback_seconds,
-        alert_time + cfg.alert_lookahead_seconds,
-    )
+        alert_time = parse_timestamp(alert["startsAt"])
+        time_window = (
+            alert_time - cfg.alert_lookback_seconds,
+            alert_time + cfg.alert_lookahead_seconds,
+        )
 
-    affected_nfs = extract_nfs_from_alert(alert)
+        affected_nfs = extract_nfs_from_alert(alert)
 
-    # MCP query to Prometheus
-    # metrics = mcp_client.query_prometheus(queries=build_infra_queries(cfg.core_namespace), time_range=time_window)
-    metrics: dict[str, Any] = {}  # TODO: wire up MCP client
+        # MCP query to Prometheus
+        # metrics = mcp_client.query_prometheus(queries=build_infra_queries(cfg.core_namespace), time_range=time_window)
+        metrics: dict[str, Any] = {}  # TODO: wire up MCP client
 
-    infra_score = compute_infrastructure_score(metrics)
+        infra_score = compute_infrastructure_score(metrics)
 
-    raw_findings: dict[str, Any] = {
-        "pod_restarts": extract_restart_counts(metrics),
-        "oom_kills": extract_oom_events(metrics),
-        "resource_usage": extract_resource_metrics(metrics),
-        "node_health": extract_node_status(metrics),
-        "concurrent_failures": count_concurrent_failures(metrics),
-        "critical_events": extract_critical_events(metrics),
-    }
+        raw_findings: dict[str, Any] = {
+            "pod_restarts": extract_restart_counts(metrics),
+            "oom_kills": extract_oom_events(metrics),
+            "resource_usage": extract_resource_metrics(metrics),
+            "node_health": extract_node_status(metrics),
+            "concurrent_failures": count_concurrent_failures(metrics),
+            "critical_events": extract_critical_events(metrics),
+        }
 
-    # Save pre-filter snapshot (non-blocking, non-fatal)
-    save_artifact(incident_id, "pre_filter_infra.json", raw_findings, cfg.artifacts_dir)
+        # Save pre-filter snapshot (non-blocking, non-fatal)
+        save_artifact(incident_id, "pre_filter_infra.json", raw_findings, cfg.artifacts_dir)
 
-    compressed_findings = compress_infra_findings_for_agent(
-        raw_findings, infra_score, cfg.rca_token_budget_infra
-    )
+        compressed_findings = compress_infra_findings_for_agent(
+            raw_findings, infra_score, cfg.rca_token_budget_infra
+        )
 
-    # Save post-filter snapshot
-    save_artifact(
-        incident_id, "post_filter_infra.json", compressed_findings, cfg.artifacts_dir
-    )
+        # Save post-filter snapshot
+        save_artifact(
+            incident_id, "post_filter_infra.json", compressed_findings, cfg.artifacts_dir
+        )
 
-    # Return only the keys this agent writes — avoids LangGraph parallel-merge conflict
-    # with metrics_agent (both start from START in the same step).
-    _ = affected_nfs, time_window  # computed but used only for MCP queries (wired later)
-    return {
-        "infra_checked": True,
-        "infra_score": infra_score,
-        "infra_findings": compressed_findings,
-    }
+        # Return only the keys this agent writes — avoids LangGraph parallel-merge conflict
+        # with metrics_agent (both start from START in the same step).
+        _ = affected_nfs, time_window  # computed but used only for MCP queries (wired later)
+        return {
+            "infra_checked": True,
+            "infra_score": infra_score,
+            "infra_findings": compressed_findings,
+        }
+    except Exception:
+        logger.exception("InfraAgent failed; returning safe defaults")
+        return {"infra_checked": True, "infra_score": 0.0, "infra_findings": None}

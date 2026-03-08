@@ -53,6 +53,10 @@ def finalize_report(state: TriageState) -> TriageState:
         "infra_score": state.get("infra_score"),
         "evidence_quality_score": state.get("evidence_quality_score"),
         "attempt_count": state.get("attempt_count", 1),
+        "procedure_names": state.get("procedure_names"),
+        "mapping_confidence": state.get("mapping_confidence"),
+        "mapping_method": state.get("mapping_method"),
+        "nf_union": state.get("nf_union"),
     }
     return state
 
@@ -70,7 +74,7 @@ def create_workflow() -> Any:
     from triage_agent.agents.logs_agent import logs_agent
     from triage_agent.agents.metrics_agent import metrics_agent
     from triage_agent.agents.rca_agent import rca_agent_first_attempt
-    from triage_agent.agents.ue_traces_agent import discover_and_trace_imsis
+    from triage_agent.agents.ue_traces_agent import ue_traces_agent
 
     # Create workflow with state schema
     workflow = StateGraph(TriageState)
@@ -80,7 +84,7 @@ def create_workflow() -> Any:
     workflow.add_node("dag_mapper", dag_mapper)
     workflow.add_node("metrics_agent", metrics_agent)
     workflow.add_node("logs_agent", logs_agent)
-    workflow.add_node("traces_agent", discover_and_trace_imsis)
+    workflow.add_node("traces_agent", ue_traces_agent)
     workflow.add_node("evidence_quality", compute_evidence_quality)
     workflow.add_node("rca_agent", rca_agent_first_attempt)
     workflow.add_node("increment_attempt", increment_attempt)
@@ -160,6 +164,6 @@ def get_initial_state(alert: dict[str, Any], incident_id: str) -> TriageState:
         attempt_count=1,
         max_attempts=get_config().max_attempts,
         needs_more_evidence=False,
-        second_attempt_complete=False,
+        evidence_gaps=None,
         final_report=None,
     )

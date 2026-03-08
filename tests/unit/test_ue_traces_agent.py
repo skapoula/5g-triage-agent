@@ -6,7 +6,7 @@ Covers:
   - contract_imsi_trace: contracts raw logs into structured trace
   - ingest_traces_to_memgraph: ingests traces into Memgraph
   - run_deviation_detection_for_dag: detects deviations via Cypher
-  - discover_and_trace_imsis: entry point, updates state
+  - ue_traces_agent: entry point, updates state
   - Edge cases: no IMSIs found, Memgraph connection failure
 """
 
@@ -17,11 +17,11 @@ import pytest
 
 from triage_agent.agents.ue_traces_agent import (
     contract_imsi_trace,
-    discover_and_trace_imsis,
     extract_unique_imsis,
     ingest_traces_to_memgraph,
     per_imsi_logql,
     run_deviation_detection_for_dag,
+    ue_traces_agent,
 )
 from triage_agent.state import TriageState
 
@@ -472,12 +472,12 @@ class TestRunDeviationDetection:
 
 
 # ===========================================================================
-# discover_and_trace_imsis entry point
+# ue_traces_agent entry point
 # ===========================================================================
 
 
-class TestDiscoverAndTraceImsis:
-    """Tests for discover_and_trace_imsis() entry point.
+class TestUeTracesAgent:
+    """Tests for ue_traces_agent() entry point.
 
     Mocks loki_query and Memgraph to test the full orchestration.
     """
@@ -504,7 +504,7 @@ class TestDiscoverAndTraceImsis:
 
         state = sample_initial_state
         state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
-        result = discover_and_trace_imsis(state)
+        result = ue_traces_agent(state)
 
         assert result["discovered_imsis"] == ["001010123456789"]
 
@@ -524,7 +524,7 @@ class TestDiscoverAndTraceImsis:
 
         state = sample_initial_state
         state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
-        result = discover_and_trace_imsis(state)
+        result = ue_traces_agent(state)
 
         assert result["traces_ready"] is True
 
@@ -549,7 +549,7 @@ class TestDiscoverAndTraceImsis:
 
         state = sample_initial_state
         state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
-        result = discover_and_trace_imsis(state)
+        result = ue_traces_agent(state)
 
         assert isinstance(result["trace_deviations"], dict)
         assert "registration_general" in result["trace_deviations"]
@@ -573,7 +573,7 @@ class TestDiscoverAndTraceImsis:
 
         state = sample_initial_state
         state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
-        result = discover_and_trace_imsis(state)
+        result = ue_traces_agent(state)
 
         assert result["discovered_imsis"] == []
         assert result["traces_ready"] is True
@@ -587,7 +587,7 @@ class TestDiscoverAndTraceImsis:
         mock_get_memgraph: MagicMock,
         sample_initial_state: TriageState,
     ) -> None:
-        """discover_and_trace_imsis returns only delta dict keys."""
+        """ue_traces_agent returns only delta dict keys."""
         mock_loki.return_value = []
         mock_conn = MagicMock()
         mock_conn.execute_cypher.return_value = []
@@ -595,7 +595,7 @@ class TestDiscoverAndTraceImsis:
 
         state = sample_initial_state
         state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
-        result = discover_and_trace_imsis(state)
+        result = ue_traces_agent(state)
 
         assert isinstance(result, dict)
         assert set(result.keys()) == {"discovered_imsis", "traces_ready", "trace_deviations"}
@@ -614,13 +614,13 @@ def test_run_deviation_detection_removed():
     )
 
 
-class TestDiscoverAndTraceImsisDeltaReturn:
+class TestUeTracesAgentDeltaReturn:
     """Tests for delta return and per-procedure deviation detection."""
 
-    def test_discover_and_trace_imsis_returns_delta_dict(
+    def test_ue_traces_agent_returns_delta_dict(
         self, sample_initial_state: TriageState, mock_memgraph: MagicMock
     ) -> None:
-        """discover_and_trace_imsis returns delta dict, not full state."""
+        """ue_traces_agent returns delta dict, not full state."""
         state = sample_initial_state
         state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
 
@@ -628,7 +628,7 @@ class TestDiscoverAndTraceImsisDeltaReturn:
             patch("triage_agent.agents.ue_traces_agent.loki_query", return_value=[]),
             patch("triage_agent.agents.ue_traces_agent.get_memgraph", return_value=mock_memgraph),
         ):
-            result = discover_and_trace_imsis(state)
+            result = ue_traces_agent(state)
 
         expected_keys = {"discovered_imsis", "traces_ready", "trace_deviations"}
         assert set(result.keys()) == expected_keys
@@ -648,7 +648,7 @@ class TestDiscoverAndTraceImsisDeltaReturn:
             patch("triage_agent.agents.ue_traces_agent.loki_query", return_value=[]),
             patch("triage_agent.agents.ue_traces_agent.get_memgraph", return_value=mock_memgraph),
         ):
-            result = discover_and_trace_imsis(state)
+            result = ue_traces_agent(state)
 
         deviations = result["trace_deviations"]
         assert isinstance(deviations, dict)
@@ -662,8 +662,67 @@ class TestDiscoverAndTraceImsisDeltaReturn:
         state = sample_initial_state
         state["dags"] = []
 
-        result = discover_and_trace_imsis(state)
+        result = ue_traces_agent(state)
 
         assert result["discovered_imsis"] == []
         assert result["traces_ready"] is False
         assert result["trace_deviations"] is None
+
+
+class TestUeTracesAgentStateLogs:
+    """Tests for INC-6: use state.logs for IMSI discovery before Loki query."""
+
+    @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
+    @patch("triage_agent.agents.ue_traces_agent.loki_query")
+    def test_uses_state_logs_when_available(
+        self,
+        mock_loki: MagicMock,
+        mock_get_memgraph: MagicMock,
+        sample_initial_state: TriageState,
+    ) -> None:
+        """When state.logs contains IMSI-bearing entries, loki_query is NOT called for discovery."""
+        mock_conn = MagicMock()
+        mock_conn.execute_cypher.return_value = []
+        mock_get_memgraph.return_value = mock_conn
+        # Per-IMSI trace loki_query (not discovery) returns empty
+        mock_loki.return_value = []
+
+        state = sample_initial_state
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
+        state["logs"] = {
+            "AMF": [
+                {"message": "Registration from imsi-001010123456789 started"},
+                {"message": "Normal event"},
+            ]
+        }
+
+        result = ue_traces_agent(state)
+
+        # Discovery IMSI found from state.logs — loki_query called only for per-IMSI trace, not discovery
+        assert result["discovered_imsis"] == ["001010123456789"]
+        # loki_query should be called only once (per-IMSI trace), not twice (discovery + trace)
+        assert mock_loki.call_count == 1
+
+    @patch("triage_agent.agents.ue_traces_agent.get_memgraph")
+    @patch("triage_agent.agents.ue_traces_agent.loki_query")
+    def test_falls_back_to_loki_when_state_logs_empty(
+        self,
+        mock_loki: MagicMock,
+        mock_get_memgraph: MagicMock,
+        sample_initial_state: TriageState,
+    ) -> None:
+        """When state.logs is empty, loki_query IS called for IMSI discovery."""
+        mock_conn = MagicMock()
+        mock_conn.execute_cypher.return_value = []
+        mock_get_memgraph.return_value = mock_conn
+        # Discovery query returns no IMSIs
+        mock_loki.return_value = []
+
+        state = sample_initial_state
+        state["dags"] = [{"name": "registration_general", "all_nfs": ["AMF"]}]
+        state["logs"] = {}
+
+        ue_traces_agent(state)
+
+        # loki_query should be called for discovery (state.logs is empty)
+        assert mock_loki.call_count >= 1
