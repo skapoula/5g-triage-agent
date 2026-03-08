@@ -676,9 +676,9 @@ class TestCountTokens:
         from triage_agent.utils import count_tokens
         assert count_tokens("abcdefgh") == 2
 
-    def test_also_importable_from_rca_agent(self) -> None:
-        """count_tokens is re-exported from rca_agent for backwards compat."""
-        from triage_agent.agents.rca_agent import count_tokens
+    def test_also_importable_from_utils(self) -> None:
+        """count_tokens lives in triage_agent.utils."""
+        from triage_agent.utils import count_tokens
         assert count_tokens("abcd") == 1
 
 
