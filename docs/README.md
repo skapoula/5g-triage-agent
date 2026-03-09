@@ -595,3 +595,162 @@ When `LANGCHAIN_TRACING_V2=true`, every `@traceable`-decorated agent function em
 wall-clock start/end times. In the LangSmith UI, span timestamps let you verify the topology:
 `infra_agent` and `evidence_quality` spans should both complete before `join_for_rca` starts.
 If `join_for_rca` starts before `infra_agent` finishes, the graph wiring is incorrect.
+
+## 8. State Fields
+
+All agents communicate through `TriageState` — a `TypedDict` defined in `src/triage_agent/state.py`.
+Each agent returns a dict delta; LangGraph merges it into the shared state.
+
+| Field | Type | Written by | Read by |
+|-------|------|-----------|---------|
+| `alert` | `dict[str, Any]` | Initial state | All agents |
+| `incident_id` | `str` | Initial state | All agents |
+| `infra_checked` | `bool` | InfraAgent | — |
+| `infra_score` | `float` | InfraAgent | join_for_rca, RCAAgent |
+| `infra_findings` | `dict[str, Any] \| None` | InfraAgent | join_for_rca |
+| `procedure_names` | `list[str] \| None` | DagMapper | RCAAgent (prompt header) |
+| `dag_ids` | `list[str] \| None` | DagMapper | — |
+| `dags` | `list[dict[str, Any]] \| None` | DagMapper | NfLogsAgent, UeTracesAgent, join_for_rca |
+| `nf_union` | `list[str] \| None` | DagMapper | NfMetricsAgent, NfLogsAgent, UeTracesAgent |
+| `mapping_confidence` | `float` | DagMapper | — |
+| `mapping_method` | `str` | DagMapper | — |
+| `metrics` | `dict[str, Any] \| None` | NfMetricsAgent | EvidenceQuality, join_for_rca |
+| `logs` | `dict[str, Any] \| None` | NfLogsAgent | EvidenceQuality, UeTracesAgent, join_for_rca |
+| `discovered_imsis` | `list[str] \| None` | UeTracesAgent | — |
+| `traces_ready` | `bool` | UeTracesAgent | EvidenceQuality |
+| `trace_deviations` | `dict[str, list[dict[str, Any]]] \| None` | UeTracesAgent | join_for_rca |
+| `evidence_quality_score` | `float` | EvidenceQuality | join_for_rca, RCAAgent |
+| `compressed_evidence` | `dict[str, str] \| None` | join_for_rca | RCAAgent |
+| `root_nf` | `str \| None` | RCAAgent | finalize_report |
+| `failure_mode` | `str \| None` | RCAAgent | finalize_report |
+| `layer` | `str` | RCAAgent | finalize_report |
+| `confidence` | `float` | RCAAgent | should_retry, finalize_report |
+| `evidence_chain` | `list[dict[str, Any]]` | RCAAgent | finalize_report |
+| `attempt_count` | `int` | Initial state / increment_attempt | should_retry |
+| `max_attempts` | `int` | Initial state | should_retry |
+| `needs_more_evidence` | `bool` | RCAAgent | should_retry |
+| `evidence_gaps` | `list[str] \| None` | RCAAgent | — |
+| `final_report` | `dict[str, Any] \| None` | finalize_report | API response |
+
+## 9. LangGraph Internals
+
+### How nodes and edges are registered
+
+`graph.py` builds the workflow using `StateGraph(TriageState)`:
+
+```python
+workflow = StateGraph(TriageState)
+
+# Register nodes (name → function)
+workflow.add_node("infra_agent", infra_agent)
+workflow.add_node("join_for_rca", join_for_rca)
+# ... etc
+
+# Wire edges
+workflow.add_edge(START, "infra_agent")
+workflow.add_edge(START, "dag_mapper")          # parallel fan-out from START
+workflow.add_edge("dag_mapper", "metrics_agent")
+workflow.add_edge("dag_mapper", "logs_agent")
+workflow.add_edge("dag_mapper", "traces_agent") # parallel fan-out from dag_mapper
+
+# Both of these point to join_for_rca — LangGraph waits for both before running it
+workflow.add_edge("infra_agent", "join_for_rca")
+workflow.add_edge("evidence_quality", "join_for_rca")
+
+# Conditional edge: should_retry() returns "retry" or "finalize"
+workflow.add_conditional_edges("rca_agent", should_retry, {"retry": "increment_attempt", "finalize": "finalize"})
+```
+
+### How join_for_rca enforces the infra barrier
+
+LangGraph's execution model: a node runs only when **all** of its incoming edges have delivered
+data. `join_for_rca` has two incoming edges — from `infra_agent` and from `evidence_quality`.
+This guarantees `infra_agent` has written `infra_score` and `infra_findings` before
+`join_for_rca` runs, regardless of which branch completes first.
+
+### How to add a new agent
+
+1. Write `src/triage_agent/agents/my_agent.py` — function `my_agent(state: TriageState) -> dict[str, Any]`
+2. Add new state fields to `src/triage_agent/state.py`
+3. In `graph.py`: `workflow.add_node("my_agent", my_agent)` and wire edges
+4. Update `get_initial_state()` in `graph.py` to initialise the new fields
+
+See `docs/agent-development.md` for templates and patterns.
+
+## 10. Incident Lifecycle
+
+```
+POST /webhook
+  ↓
+Validate AlertmanagerPayload (Pydantic)
+  ↓
+Generate incident_id (UUID4)
+  ↓
+_incident_store[incident_id] = {"ts": monotonic(), "data": None}  # pending
+  ↓
+BackgroundTasks.add_task(_run_triage, alert_dict, incident_id)
+  ↓
+Return 200 {"incident_id": "...", "status": "accepted", ...}
+```
+
+```
+_run_triage (background thread via asyncio.to_thread):
+  ↓
+get_initial_state(alert) → TriageState
+  ↓
+_workflow.invoke(initial_state)  # runs full LangGraph pipeline
+  ↓
+_incident_store[incident_id] = {"ts": monotonic(), "data": final_report}  # complete
+  (on exception: "data": {"error": "triage_failed"})
+```
+
+```
+GET /incidents/{incident_id}
+  ↓
+Look up _incident_store[incident_id]
+  - Missing → 404
+  - data=None → 200 {"status": "pending"}
+  - data=dict → 200 {"status": "complete", "final_report": {...}}
+  - data={"error": ...} → 200 {"status": "failed", ...}
+```
+
+Final report fields: `incident_id`, `layer`, `root_nf`, `failure_mode`, `confidence`,
+`evidence_chain`, `infra_score`, `evidence_quality_score`, `attempt_count`,
+`procedure_names`, `mapping_confidence`, `mapping_method`, `nf_union`.
+
+## 11. Debugging
+
+### LangSmith tracing
+
+Set these environment variables before starting the server:
+```bash
+export LANGCHAIN_TRACING_V2=true
+export LANGSMITH_API_KEY=ls__...
+export LANGSMITH_PROJECT=5g-triage-agent  # or custom project name
+```
+
+Every `@traceable`-decorated agent function emits a span. The LangSmith UI shows the full span
+tree per investigation, with inputs/outputs at each node.
+
+### Replay a run locally
+
+```python
+from triage_agent.graph import create_workflow, get_initial_state
+
+alert = { ... }  # paste from logs
+workflow = create_workflow()
+result = workflow.invoke(get_initial_state(alert, incident_id="debug-001"))
+print(result["final_report"])
+```
+
+### Common failure modes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `KeyError: 'compressed_evidence'` | `join_for_rca` did not run before `rca_agent` | Check edge wiring in `graph.py` |
+| `confidence=0.0, failure_mode="llm_timeout"` | LLM request timed out | Increase `LLM_TIMEOUT` or switch provider |
+| `dags=[]`, `mapping_method="generic_fallback"` | DAGs not loaded in Memgraph | Run `mgconsole < dags/*.cypher` |
+| `metrics=None` | Prometheus unreachable | Check `PROMETHEUS_URL`, verify MCP server |
+| `logs=None` | Loki unreachable | Check `LOKI_URL`, verify MCP server |
+| `evidence_quality_score=0.10` | No evidence at all | All three data sources failed; check connectivity |
+| `mapping_method="generic_fallback"` | Alert label not matching any procedure | Add keywords to `KEYWORD_MAP` in `dag_mapper.py` |
