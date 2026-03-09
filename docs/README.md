@@ -675,7 +675,8 @@ This guarantees `infra_agent` has written `infra_score` and `infra_findings` bef
 3. In `graph.py`: `workflow.add_node("my_agent", my_agent)` and wire edges
 4. Update `get_initial_state()` in `graph.py` to initialise the new fields
 
-See `docs/agent-development.md` for templates and patterns.
+See [`agent-development.md`](agent-development.md) for templates and patterns.
+See [`configuration-reference.md`](configuration-reference.md) for all configurable thresholds and timeouts.
 
 ## 10. Incident Lifecycle
 
