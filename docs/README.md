@@ -151,9 +151,9 @@ merges the delta into the shared state. Source files are in `src/triage_agent/ag
 - `incident_id` — for artifact snapshots
 
 **How it works:**
-Builds four PromQL queries scoped to the namespace: pod restarts (window: `promql_restart_window=1h`),
-OOM kills (window: `promql_oom_window=5m`), pod status (Pending/Failed/Unknown), and CPU usage
-(window: `promql_cpu_rate_window_infra=2m`). Queries Prometheus via MCP.
+Builds five PromQL queries scoped to the namespace: pod restarts (window: `promql_restart_window=1h`),
+OOM kills (window: `promql_oom_window=5m`), CPU usage (window: `promql_cpu_rate_window_infra=2m`),
+memory usage percent, and pod status (Pending/Failed/Unknown). Queries Prometheus via MCP.
 
 Scores each dimension with configurable weights:
 - Restarts: weight 0.35 (breakpoints: >5 restarts → 1.0, ≥3 → 0.7, ≥1 → 0.4)
@@ -177,18 +177,18 @@ infra-triggered application failure, <0.30 → `"application"`.
 ### DagMapper (`agents/dag_mapper.py`)
 
 **Reads from state:**
-- `alert["labels"]["alertname"]` — primary match signal
+- `alert["labels"]["procedure"]` — primary match signal
 - `alert["labels"]["nf"]` — NF hint for `nf_default` tier
 - `alert["annotations"]["description"]` — keyword search
 
 **How it works:**
 Priority cascade (stops at first match):
-1. **exact_match** — `alertname` exactly equals a known DAG name → `mapping_confidence=1.0`
+1. **exact_match** — `alert["labels"]["procedure"]` exactly equals a known DAG name → `mapping_confidence=1.0`
 2. **keyword_match** — `alertname`/`description` contains a key from `KEYWORD_MAP`
    (e.g. `"auth"` → `["Authentication_5G_AKA", "Registration_General"]`) → `mapping_confidence=0.8`
 3. **nf_default** — `alert["labels"]["nf"]` maps via `NF_DEFAULT_MAP`
    (e.g. `"amf"` → `["Registration_General", "Authentication_5G_AKA"]`) → `mapping_confidence=0.6`
-4. **generic_fallback** — all three known DAGs → `mapping_confidence=0.4`
+4. **generic_fallback** — all three known DAGs → `mapping_confidence=0.3`
 
 For each matched DAG ID, fetches the full DAG dict from Memgraph via Bolt (Cypher:
 `MATCH (t:ReferenceTrace {name: $name})-[:HAS_PHASE]->(e:RefEvent) RETURN t, e ORDER BY e.order`).
@@ -215,10 +215,10 @@ their queries). `join_for_rca` includes DAG JSON in the RCA prompt.
 
 **How it works:**
 For each NF in `nf_union`, runs Prometheus range queries:
-- HTTP error rate: `rate(http_requests_total{nf=~"...", status=~"5.."}[1m])`
+- HTTP error rate: `rate(http_requests_total{nf="{nf}", status=~"5.."}[1m])`
   (window: `promql_error_rate_window=1m`)
-- p95 latency: `histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{...}[5m]))`
-  (quantile: `promql_latency_quantile=0.95`, window: `promql_cpu_rate_window_nf=5m`)
+- p95 latency: `histogram_quantile({quantile}, http_request_duration_seconds{nf="{nf}"})`
+  (quantile: `promql_latency_quantile=0.95`)
 - CPU usage: `rate(container_cpu_usage_seconds_total{container="<nf>"}[5m])`
 
 Time window: `[alert_time − alert_lookback_seconds, alert_time + alert_lookahead_seconds]`
@@ -248,7 +248,7 @@ same `[alert_time − 300s, alert_time + 60s]` window, expressed as nanosecond e
 Max log lines: `loki_query_limit=1000`.
 
 After fetching, annotates each log entry: if the message matches a `failure_pattern` wildcard
-from a DAG phase (e.g. `"*auth*fail*"`), the entry gets `{"matched_dag_phase": <phase_id>}`.
+from a DAG phase (e.g. `"*auth*fail*"`), the entry gets `{"matched_phase": <phase_id>, "matched_pattern": <pattern>}`.
 
 Compresses via `compress_nf_logs()`:
 - Budget: `rca_token_budget_logs=1300` tokens ≈ 5200 chars
@@ -256,7 +256,7 @@ Compresses via `compress_nf_logs()`:
 
 **Writes to state:**
 - `logs: dict[str, list[dict]]` — keyed by NF name; each entry has `timestamp`, `message`,
-  `level`, `pod`, and optionally `matched_dag_phase`
+  `level`, `pod`, and optionally `matched_phase`, `matched_pattern`
 
 **Consumed by:** `EvidenceQuality` (presence of logs → +score), `UeTracesAgent` (extracts IMSI
 numbers from log messages), `join_for_rca` (logs section of the RCA prompt).
