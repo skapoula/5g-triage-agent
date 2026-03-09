@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -36,8 +37,17 @@ app.add_middleware(
 # Compile the workflow once at startup rather than per request
 _workflow = create_workflow()
 
-# In-memory incident store.  None = pending, dict = complete or failed.
-_incident_store: dict[str, dict[str, Any] | None] = {}
+# Each value: {"ts": float (monotonic), "data": dict | None}
+# data=None → pending; data=dict → complete or failed
+_incident_store: dict[str, dict[str, Any]] = {}
+
+
+def _evict_stale() -> None:
+    """Remove incident entries older than cfg.incident_ttl_seconds."""
+    cutoff = time.monotonic() - _cfg.incident_ttl_seconds
+    stale = [k for k, v in _incident_store.items() if v["ts"] < cutoff]
+    for k in stale:
+        del _incident_store[k]
 
 
 class IncidentResponse(BaseModel):
@@ -57,14 +67,14 @@ async def _run_triage(alert_dict: dict[str, Any], incident_id: str) -> None:
     try:
         initial_state = get_initial_state(alert=alert_dict, incident_id=incident_id)
         result = await asyncio.to_thread(_workflow.invoke, initial_state)
-        _incident_store[incident_id] = result.get("final_report") or {}
+        _incident_store[incident_id] = {"ts": time.monotonic(), "data": result.get("final_report") or {}}
         logger.info(
             f"Triage complete: incident_id={incident_id}, "
             f"report={result.get('final_report')}"
         )
     except Exception:
         logger.exception(f"Triage failed: incident_id={incident_id}")
-        _incident_store[incident_id] = {"error": "triage_failed"}
+        _incident_store[incident_id] = {"ts": time.monotonic(), "data": {"error": "triage_failed"}}
 
 
 class AlertLabel(BaseModel):
@@ -182,7 +192,8 @@ async def receive_alert(
             alerts_received=len(payload.alerts),
         )
 
-    _incident_store[incident_id] = None  # mark as pending before dispatching
+    _evict_stale()
+    _incident_store[incident_id] = {"ts": time.monotonic(), "data": None}  # pending
     background_tasks.add_task(_run_triage, firing_alerts[0].model_dump(), incident_id)
 
     return TriageResponse(
@@ -203,12 +214,12 @@ async def get_incident(incident_id: str) -> IncidentResponse:
     """
     if incident_id not in _incident_store:
         raise HTTPException(status_code=404, detail=f"Unknown incident_id: {incident_id}")
-    entry = _incident_store[incident_id]
-    if entry is None:
+    data = _incident_store[incident_id]["data"]
+    if data is None:
         return IncidentResponse(incident_id=incident_id, status="pending")
-    if "error" in entry:
-        return IncidentResponse(incident_id=incident_id, status="failed", final_report=entry)
-    return IncidentResponse(incident_id=incident_id, status="complete", final_report=entry)
+    if "error" in data:
+        return IncidentResponse(incident_id=incident_id, status="failed", final_report=data)
+    return IncidentResponse(incident_id=incident_id, status="complete", final_report=data)
 
 
 @app.get("/")

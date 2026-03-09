@@ -368,13 +368,17 @@ class TestIncidentRoute:
 
     def test_complete_incident_returns_report(self, client: TestClient) -> None:
         """Manually seed a complete report and verify the endpoint returns it."""
+        import time
         from triage_agent.api.webhook import _incident_store
 
         _incident_store["manual-001"] = {
-            "incident_id": "manual-001",
-            "layer": "application",
-            "root_nf": "AMF",
-            "confidence": 0.85,
+            "ts": time.monotonic(),
+            "data": {
+                "incident_id": "manual-001",
+                "layer": "application",
+                "root_nf": "AMF",
+                "confidence": 0.85,
+            },
         }
         poll = client.get("/incidents/manual-001")
         assert poll.status_code == 200
@@ -383,10 +387,40 @@ class TestIncidentRoute:
         assert data["final_report"]["layer"] == "application"
 
     def test_failed_incident_returns_failed_status(self, client: TestClient) -> None:
+        import time
         from triage_agent.api.webhook import _incident_store
 
-        _incident_store["failed-001"] = {"error": "triage_failed"}
+        _incident_store["failed-001"] = {"ts": time.monotonic(), "data": {"error": "triage_failed"}}
         poll = client.get("/incidents/failed-001")
         assert poll.status_code == 200
         assert poll.json()["status"] == "failed"
         assert poll.json()["final_report"]["error"] == "triage_failed"
+
+
+import time
+from triage_agent.api import webhook as webhook_module
+
+
+class TestIncidentStoreTTL:
+    def setup_method(self) -> None:
+        """Clean the store before each test."""
+        webhook_module._incident_store.clear()
+
+    def test_stale_incidents_are_evicted(self) -> None:
+        """Incidents older than the TTL are removed by _evict_stale."""
+        webhook_module._incident_store["stale-id"] = {
+            "ts": time.monotonic() - 9999,
+            "data": {"layer": "application"},
+        }
+        assert "stale-id" in webhook_module._incident_store
+        webhook_module._evict_stale()
+        assert "stale-id" not in webhook_module._incident_store
+
+    def test_fresh_incidents_are_not_evicted(self) -> None:
+        """Incidents added just now survive eviction."""
+        webhook_module._incident_store["fresh-id"] = {
+            "ts": time.monotonic(),
+            "data": None,
+        }
+        webhook_module._evict_stale()
+        assert "fresh-id" in webhook_module._incident_store

@@ -61,6 +61,10 @@ class TriageAgentConfig(BaseSettings):
     # production.  JSON list via env: CORS_ALLOW_ORIGINS='["http://am:9093"]'
     cors_allow_origins: list[str] = ["*"]
 
+    # TTL for completed/failed incident entries in the in-memory store.
+    # Entries older than this are evicted on each new webhook POST.
+    incident_ttl_seconds: int = 3600
+
     # Host/port for the uvicorn webhook server.
     server_host: str = "0.0.0.0"
     server_port: int = 8000
