@@ -81,5 +81,5 @@ curl -X POST http://localhost:8000/webhook \
 
 # 7. Poll for result
 curl http://localhost:8000/incidents/<incident_id>
-# 202 while running; 200 with final_report when complete
+# {"status": "pending"} while running; {"status": "complete", "final_report": {...}} when done
 ```
