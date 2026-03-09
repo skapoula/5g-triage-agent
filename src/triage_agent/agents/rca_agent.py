@@ -231,20 +231,20 @@ def create_llm(
             api_key=SecretStr(api_key) if api_key else None,
             temperature=temperature,
             timeout=timeout,
-            max_tokens=4096,
+            model_kwargs={"max_tokens": 4096},
             streaming=True,
         )
     elif provider == "anthropic":
         try:
-            from langchain_anthropic import ChatAnthropic  # deferred: optional dependency
+            from langchain_anthropic import ChatAnthropic  # type: ignore[import-not-found]
         except ImportError as e:
             raise ImportError(
                 "langchain-anthropic is required for the 'anthropic' provider. "
                 "Install it with: pip install triage-agent[anthropic]"
             ) from e
-        return ChatAnthropic(  # type: ignore[return-value]
+        return ChatAnthropic(
             model=model,
-            api_key=SecretStr(api_key) if api_key else None,  # type: ignore[arg-type]
+            api_key=SecretStr(api_key) if api_key else None,
             temperature=temperature,
             timeout=timeout,
             max_tokens=4096,
@@ -263,7 +263,7 @@ def create_llm(
             base_url=base_url,
             temperature=temperature,
             timeout=timeout,
-            max_tokens=4096,
+            model_kwargs={"max_tokens": 4096},
             streaming=True,
         )
     else:
@@ -375,7 +375,7 @@ def identify_evidence_gaps(state: TriageState) -> list[str]:
 
 
 @traceable(name="rca_agent_first_attempt")
-def rca_agent_first_attempt(state: TriageState) -> TriageState:
+def rca_agent_first_attempt(state: TriageState) -> dict[str, Any]:
     """RCAAgent first attempt. Uses LLM for analysis.
 
     Evidence is compressed to fit within the LLM's context window before
@@ -391,6 +391,10 @@ def rca_agent_first_attempt(state: TriageState) -> TriageState:
     # compressed_evidence is always present — populated by join_for_rca barrier node.
     # A KeyError here means the graph topology is broken (rca_agent reachable without join_for_rca).
     evidence = state["compressed_evidence"]
+    if evidence is None:
+        raise RuntimeError(
+            "compressed_evidence is None — join_for_rca barrier node must run before rca_agent_first_attempt"
+        )
     prompt = RCA_PROMPT_TEMPLATE.format(
         procedure_name=", ".join(state.get("procedure_names") or ["unknown"]),
         infra_score=state.get("infra_score", 0.0),
