@@ -219,7 +219,8 @@ For each NF in `nf_union`, runs Prometheus range queries:
   (window: `promql_error_rate_window=1m`)
 - p95 latency: `histogram_quantile({quantile}, http_request_duration_seconds{nf="{nf}"})`
   (quantile: `promql_latency_quantile=0.95`)
-- CPU usage: `rate(container_cpu_usage_seconds_total{container="<nf>"}[5m])`
+- CPU usage: `rate(container_cpu_usage_seconds_total{pod=~".*{nf}.*"}[5m])`
+  (window: `promql_cpu_rate_window_nf=5m`)
 
 Time window: `[alert_time − alert_lookback_seconds, alert_time + alert_lookahead_seconds]`
 (defaults: 300s before, 60s after). Step: `promql_range_step=15s`.
