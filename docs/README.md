@@ -502,12 +502,15 @@ During each investigation, `UeTracesAgent` **ingests live UE traces** into Memgr
 
 ```cypher
 -- Creates per-investigation trace graph
-CREATE (t:IMSITrace {imsi: $imsi, incident_id: $incident_id})
-CREATE (e:TraceEvent {order: $order, nf: $nf, action: $action, timestamp: $ts})
-CREATE (t)-[:HAS_EVENT]->(e)
--- Chains events in order
-MATCH (e1:TraceEvent {order: $n}), (e2:TraceEvent {order: $n+1})
-CREATE (e1)-[:NEXT_EVENT]->(e2)
+CREATE (t:CapturedTrace {incident_id: $incident_id, imsi: $imsi})
+WITH t
+UNWIND $events AS event
+CREATE (t)-[:EVENT]->(e:TraceEvent {
+    order: event.order,
+    message: event.message,
+    timestamp: event.timestamp,
+    nf: event.nf
+})
 ```
 
 Then runs a comparison query: for each `(:RefEvent)` in the reference DAG, checks whether a
