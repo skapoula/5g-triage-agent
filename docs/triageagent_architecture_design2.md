@@ -21,7 +21,7 @@
 5G TriageAgent v3.2 is a multi-agent LangGraph orchestration system for real-time root cause analysis of 5G core network failures. When Prometheus Alertmanager fires an alert (e.g., `registration_failures > 0`), the system coordinates specialized agents through a directed graph workflow to localize failures across infrastructure, network function, and 3GPP procedure layers.
 
 The architecture implements a multi-agent pipeline:
-**InfraAgent** and **DagMapper** run in parallel from START. DagMapper fans out in parallel to **NfMetricsAgent**, **NfLogsAgent**, and **UeTracesAgent**, which converge at **EvidenceQuality**. A **join_for_rca** barrier then synchronises the infra and evidence branches before **RCAAgent** runs.
+**InfraAgent** and **DagMapper** run in parallel from START. DagMapper fans out in parallel to **NfMetricsAgent**, **NfLogsAgent**, and **UeTracesAgent**, which converge at **EvidenceQuality**. Both **InfraAgent** and **EvidenceQuality** converge at **join_for_rca**, an explicit barrier node that compresses all evidence before **RCAAgent** runs.
 Each agent has a focused responsibility and communicates through a shared state object. 3GPP procedure DAGs are pre-loaded into embedded Memgraph.
 
 | 4 | MCP | Memgraph |
@@ -55,10 +55,9 @@ flowchart TD
     E2 --> F
     E3 --> F
 
-    D --> J["join_for_rca<br/>Barrier"]
-    F --> J
-
-    J --> G["RCAAgent<br/>Analyze:<br/>• Infra • Metrics • Logs<br/>• UE Traces • DAG deviation"]
+    D --> JR
+    F --> JR["join_for_rca<br/>(compress evidence)"]
+    JR --> G["RCAAgent<br/>Analyze:<br/>• Infra • Metrics • Logs<br/>• UE Traces • DAG deviation"]
 
     G --> H["RCA summary + artifacts"]
     H --> I(["END"])
@@ -74,13 +73,31 @@ flowchart TD
 | **NfMetricsAgent** | NF Metrics collection | DAG NF list, time window | Prometheus metrics per NF | No (MCP query) |
 | **NfLogsAgent** | NF Logs collection | DAG NF list, time window | Loki logs per NF | No (MCP query) |
 | **UeTracesAgent** | IMSI traces construction | Loki NF logs, IMSI list, time window | IMSI traces, `trace_deviations` | No (MCP query) |
-| **RCAAgent** | Root cause analysis | DAG + metrics + logs + UE traces + infra | `root_nf`, `failure_mode`, `confidence`, `evidence_chain` | Yes (analysis, with degraded mode fallback) |
+| **EvidenceQuality** | Evidence quality scoring | Metrics, logs, traces | `evidence_quality_score` | No (rule-based) |
+| **join_for_rca** | Evidence-joining barrier | All evidence from `infra_agent` + `evidence_quality` | `compressed_evidence` | No (deterministic) |
+| **RCAAgent** | Root cause analysis | `compressed_evidence` (infra + metrics + logs + traces + DAGs) | `root_nf`, `failure_mode`, `confidence`, `evidence_chain` | Yes (analysis) |
 
 ### 2.3 Shared State Object
 
 All agents read/write to a LangGraph state object.
 
 **Source**: `src/triage_agent/state.py`
+
+Key state fields written by each stage:
+
+| Field | Type | Written by | Read by |
+|-------|------|-----------|---------|
+| `infra_score` | `float` | `infra_agent` | `join_for_rca`, `rca_agent` |
+| `infra_findings` | `dict \| None` | `infra_agent` | `join_for_rca` |
+| `dags` | `list \| None` | `dag_mapper` | `metrics_agent`, `logs_agent`, `traces_agent`, `join_for_rca` |
+| `nf_union` | `list \| None` | `dag_mapper` | `metrics_agent` |
+| `metrics` | `dict \| None` | `metrics_agent` | `evidence_quality`, `join_for_rca` |
+| `logs` | `dict \| None` | `logs_agent` | `evidence_quality`, `join_for_rca` |
+| `trace_deviations` | `dict \| None` | `traces_agent` | `evidence_quality`, `join_for_rca` |
+| `evidence_quality_score` | `float` | `evidence_quality` | `join_for_rca`, `rca_agent` |
+| `compressed_evidence` | `dict[str, str] \| None` | `join_for_rca` | `rca_agent` |
+| `root_nf`, `failure_mode`, `confidence`, `evidence_chain` | various | `rca_agent` | `finalize` |
+| `final_report` | `dict \| None` | `finalize` | API response |
 
 ---
 
@@ -200,7 +217,7 @@ Outputs `discovered_imsis`, `traces_ready`, and `trace_deviations` (`dict[str, l
 
 **Source**: `src/triage_agent/agents/evidence_quality.py`
 
-After agents complete, computes evidence quality based on data diversity:
+After the three collection agents complete, computes evidence quality based on data diversity:
 
 | Available Evidence | Quality Score |
 |---|---|
@@ -212,12 +229,20 @@ After agents complete, computes evidence quality based on data diversity:
 | Logs only | 0.35 |
 | No evidence | 0.10 |
 
+#### 3.3.5 join_for_rca (Evidence-Joining Barrier)
+
+**Source**: `src/triage_agent/agents/rca_agent.py`
+
+Evidence-joining barrier node in `rca_agent.py`. Waits for both `infra_agent` and `evidence_quality` to complete before compressing all evidence for the LLM context window. Writes to `compressed_evidence` state field.
+
+LangGraph guarantees that all edges pointing into `join_for_rca` (`infra_agent → join_for_rca` and `evidence_quality → join_for_rca`) must complete before `join_for_rca` executes. This replaces the previous implicit assumption that infra data would be present due to superstep-merge timing.
+
 ---
 
 ### 3.4 RCAAgent
 
-**Trigger**: `join_for_rca` barrier node (waits for both `infra_agent` and `evidence_quality` to complete)
-**LLM Calls**: 1 per attempt (max 2 total)
+**Trigger**: `join_for_rca` barrier node completes (guarantees both `infra_agent` and `evidence_quality` have written to state before execution)
+**LLM Calls**: 1 (single attempt; `max_attempts=1`)
 **Source**: `src/triage_agent/agents/rca_agent.py`
 
 **Rationale**: RCAAgent has full context (infrastructure + application evidence) to make informed decision. For example:
@@ -228,20 +253,23 @@ After agents complete, computes evidence quality based on data diversity:
 #### 3.4.1 First Attempt Analysis
 
 **Input**:
-- `state["dags"]` → list of 3GPP procedure structures matched by DagMapper
-- `state["metrics"]` → per-NF metrics
-- `state["logs"]` → per-NF logs
-- `state["trace_deviations"]` → `dict[str, list[dict]]` keyed by dag_name — per-procedure deviation results from Memgraph
+- `state["compressed_evidence"]` → pre-compressed evidence dict written by `join_for_rca`, containing formatted sections for the LLM prompt (infra findings, DAGs, metrics, logs, trace deviations)
 - `state["evidence_quality_score"]` → data completeness
-- `state["infra_score"]` / `state["infra_findings"]` → infrastructure layer findings
+- `state["infra_score"]` → infrastructure layer score (used for threshold decisions)
 
 The LLM prompt template is defined in `rca_agent.py` â†’ `RCA_PROMPT_TEMPLATE`. It provides the LLM with infrastructure findings, procedure DAG, application evidence (metrics, logs, trace deviations), and a structured analysis framework.
 
 The LLM returns a JSON object with: `layer`, `root_nf`, `failure_mode`, `failed_phase`, `confidence`, `evidence_chain`, `alternative_hypotheses`, and `reasoning`.
 
-#### 3.4.2 Confidence Decision
+#### 3.4.2 Confidence Gate & LLM Configuration
 
-Minimum confidence threshold: 0.70 (lowered to 0.65 if evidence quality â‰¥ 0.80). If confidence is below threshold, a second attempt is triggered with additional evidence collection.
+Minimum confidence threshold: `0.70` (lowered to `0.65` when `evidence_quality_score ≥ 0.80`). With `max_attempts=1` there is no retry — the single attempt always proceeds to `finalize`.
+
+**LLM client parameters** (all providers):
+- `max_tokens=4096` — caps output length; prevents unbounded Qwen3 thinking-mode generation
+- `streaming=True` — uses SSE streaming so the inference server cancels generation immediately on client disconnect
+- `timeout=300` — HTTP client timeout (seconds)
+- `temperature=0.1` — near-zero for deterministic JSON output
 
 ---
 
@@ -280,10 +308,9 @@ flowchart TD
     DAG --> L
     DAG --> U
 
-    INFRA --> JOIN["join_for_rca<br/>Barrier"]
-    EQ --> JOIN
-
-    JOIN --> RCA["RCAAgent<br/>Inputs: infra_findings, metrics,<br/>logs, UE traces, DAGs from Memgraph<br/>LLM analyze → Layer decision → Root cause"]
+    INFRA --> JR
+    EQ --> JR["join_for_rca<br/>(barrier node)<br/>Writes: compressed_evidence"]
+    JR --> RCA["RCAAgent<br/>Reads: compressed_evidence<br/>LLM analyze → Layer decision → Root cause"]
 
     RCA --> FIN["Finalize"]
     FIN --> END_NODE(["END"])
@@ -303,9 +330,9 @@ flowchart TD
 | `dag_mapper` | `dag_mapper` (from `agents/dag_mapper.py`) |
 | `metrics_agent` | `metrics_agent` (from `agents/metrics_agent.py`) |
 | `logs_agent` | `logs_agent` (from `agents/logs_agent.py`) |
-| `traces_agent` | `discover_and_trace_imsis` (from `agents/ue_traces_agent.py`) |
+| `traces_agent` | `ue_traces_agent` (from `agents/ue_traces_agent.py`) |
 | `evidence_quality` | `compute_evidence_quality` (from `agents/evidence_quality.py`) |
-| `join_for_rca` | `join_for_rca` (inline, barrier — waits for both infra and evidence branches) |
+| `join_for_rca` | `join_for_rca` (from `agents/rca_agent.py`) |
 | `rca_agent` | `rca_agent_first_attempt` (from `agents/rca_agent.py`) |
 | `increment_attempt` | `increment_attempt` (inline, increments `attempt_count`) |
 | `finalize` | `finalize_report` (inline, assembles `final_report`) |
@@ -316,10 +343,10 @@ flowchart TD
 - `START → dag_mapper` (parallel with infra_agent)
 - Parallel fan-out from dag_mapper: `dag_mapper → metrics_agent`, `dag_mapper → logs_agent`, `dag_mapper → traces_agent`
 - Parallel converge at evidence: `metrics_agent → evidence_quality`, `logs_agent → evidence_quality`, `traces_agent → evidence_quality`
-- Barrier join: `infra_agent → join_for_rca`, `evidence_quality → join_for_rca`
+- Explicit barrier converge: `infra_agent → join_for_rca`, `evidence_quality → join_for_rca` (LangGraph waits for all incoming edges before executing `join_for_rca`)
 - `join_for_rca → rca_agent`
-- Conditional routing: `rca_agent → {retry: increment_attempt | finalize: finalize}` (via `should_retry()`)
-- Retry loop: `increment_attempt → rca_agent`
+- Conditional routing: `rca_agent → increment_attempt` (retry) or `rca_agent → finalize` (done) via `should_retry()`
+- `increment_attempt → rca_agent`
 - `finalize → END`
 
 ### 4.3 LangSmith Tracing Configuration
@@ -333,7 +360,6 @@ Each agent is wrapped with `@traceable` decorator for automatic span creation. L
 - **MCP Success Rate**: % of successful MCP queries
 - **Confidence Distribution**: Histogram of final confidence scores
 - **Layer Attribution**: Infrastructure vs Application ratio
-- **Second Attempt Rate**: % of investigations requiring additional evidence
 
 ---
 
@@ -370,7 +396,6 @@ Each agent is wrapped with `@traceable` decorator for automatic span creation. L
 | LLM Token Usage (avg) | <4000 tokens/investigation | >6000 | `run_type="llm" AND status="success"` |
 | MCP Success Rate | >95% | <90% | `run_type="tool" AND name LIKE "MCP-%"` |
 | Confidence Score (avg) | >0.80 | <0.65 | `outputs.confidence` |
-| Second Attempt Rate | <15% | >30% | `outputs.needs_more_evidence=true` |
 | Infrastructure Attribution | 20-30% | - | `outputs.layer="infrastructure"` |
 | Application Attribution | 70-80% | - | `outputs.layer="application"` |
 
@@ -382,7 +407,7 @@ Each agent is wrapped with `@traceable` decorator for automatic span creation. L
 
 **Investigation Overview Dashboard**: Total investigations, success rate (confidence >0.70), layer distribution, average latency trend, LLM token consumption.
 
-**Agent Performance Dashboard**: InfraAgent avg latency and infra_score distribution, NfMetricsAgent/NfLogsAgent MCP success rates, RCAAgent confidence distribution and second attempt rate.
+**Agent Performance Dashboard**: InfraAgent avg latency and infra_score distribution, NfMetricsAgent/NfLogsAgent MCP success rates, RCAAgent confidence distribution.
 
 **MCP Health Dashboard**: Prometheus/Loki/k8s API success rates, average query latency per MCP server.
 

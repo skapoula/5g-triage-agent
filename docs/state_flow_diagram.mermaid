@@ -27,15 +27,14 @@ flowchart TD
     DAG --> L
     DAG --> U
 
-    INFRA --> JOIN["<b>join_for_rca</b><br/><i>Barrier node</i>"]
-    EQ --> JOIN
+    INFRA --> JR
+    EQ --> JR["<b>join_for_rca</b><br/><i>(barrier node)</i><br/>• Writes: compressed_evidence"]
+    JR --> RCA["<b>RCAAgent</b><br/><i>Inputs:</i> compressed_evidence<br/><i>Reads:</i> infra_findings, metrics,<br/>logs, UE traces, DAGs from Memgraph<br/><i>Process:</i> LLM analyze → Layer<br/>decision → Root cause"]
 
-    JOIN --> RCA["<b>RCAAgent</b><br/><i>Inputs:</i> infra_findings, metrics,<br/>logs, UE traces, DAGs from Memgraph<br/><i>Process:</i> LLM analyze → Layer<br/>decision → Root cause"]
-
-    RCA --> RETRY{{"<b>should_retry?</b>"}}
-    RETRY -->|"needs_more_evidence<br/>AND attempt < max"| INC["<b>increment_attempt</b>"]
+    RCA --> RETRY{"should_retry?\n(needs_more_evidence\n+ attempt_count < max)"}
+    RETRY -->|"retry"| INC["increment_attempt"]
     INC --> RCA
-    RETRY -->|confident| FIN["<b>Finalize</b>"]
+    RETRY -->|"done"| FIN["<b>Finalize</b>"]
     FIN --> END_NODE(["<b>END</b>"])
 
     style START fill:#16213e,stroke:#e94560,stroke-width:2px,color:#e0e0e0
@@ -45,10 +44,10 @@ flowchart TD
     style L fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
     style U fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
     style EQ fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
-    style JOIN fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
+    style JR fill:#16213e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
     style RCA fill:#0f3460,stroke:#e94560,stroke-width:2px,color:#e0e0e0
-    style RETRY fill:#1a1a2e,stroke:#e94560,stroke-width:1px,color:#e0e0e0
-    style INC fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
+    style RETRY fill:#0f3460,stroke:#ffaa00,stroke-width:1px,color:#e0e0e0
+    style INC fill:#16213e,stroke:#ffaa00,stroke-width:1px,color:#e0e0e0
     style FIN fill:#16213e,stroke:#4a9eff,stroke-width:1px,color:#e0e0e0
     style END_NODE fill:#16213e,stroke:#e94560,stroke-width:2px,color:#e0e0e0
     style left fill:#0d1117,stroke:#4a9eff,stroke-width:1px,stroke-dasharray: 5 5,color:#e0e0e0
