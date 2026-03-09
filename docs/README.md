@@ -397,3 +397,125 @@ confidence < threshold → `True` (triggers retry) or `False` (triggers finalize
 - `layer: str` — `"infrastructure"` or `"application"`
 - `needs_more_evidence: bool`
 - `evidence_gaps: list[str] | None`
+
+---
+## 6. DAG Reference
+
+### What a DAG is
+
+A **reference DAG** (Directed Acyclic Graph) encodes a 3GPP procedure as an ordered sequence of
+signalling steps (phases). Each phase specifies which network function acts, what it does,
+what log keywords indicate it occurred, and what log patterns indicate it failed.
+
+The system ships three reference DAGs:
+- `Registration_General` — TS 23.502 §4.2.2.2.2 (24 phases, NFs: UE/AMF/AUSF/UDM/PCF/NRF)
+- `Authentication_5G_AKA` — TS 33.501 §6.1.3.2 (the 5G AKA sub-procedure)
+- `PDU_Session_Establishment` — TS 23.502 §4.3.2
+
+### DAG construction — loading into Memgraph
+
+DAGs are defined as **Cypher scripts** in `dags/`. Each file:
+1. Deletes any existing `(:ReferenceTrace)` node with that name (idempotent re-load)
+2. Creates a `(:ReferenceTrace {name, spec, version, procedure})` node
+3. UNWINDs a list of phase objects, creating `(:RefEvent)` nodes with properties:
+   `order`, `nf`, `action`, `keywords[]`, `optional`, and optionally `sub_dag`
+4. Wires `(:ReferenceTrace)-[:STEP]->(:RefEvent)` and `(:RefEvent)-[:NEXT]->(:RefEvent)`
+
+Example from `dags/registration_general.cypher`:
+```cypher
+CREATE (t:ReferenceTrace {
+    name: "Registration_General",
+    spec: "TS 23.502 4.2.2.2.2",
+    version: "Rel-17",
+    procedure: "registration"
+});
+-- phase at order=9 has sub_dag: "Authentication_5G_AKA"
+```
+
+**To load DAGs** (run once before first use, or after adding a new DAG):
+```bash
+mgconsole < dags/registration_general.cypher
+mgconsole < dags/authentication_5g_aka.cypher
+mgconsole < dags/pdu_session_establishment.cypher
+```
+
+In Kubernetes, an **init container** runs these commands before the main app starts
+(see `k8s/` for deployment manifests).
+
+**To add a new procedure DAG:**
+1. Create `dags/<procedure_name>.cypher` following the pattern above
+2. Add the DAG name to `KNOWN_DAGS` in `agents/dag_mapper.py`
+3. Add keyword mappings to `KEYWORD_MAP` and/or `NF_DEFAULT_MAP` in `dag_mapper.py`
+4. Load it: `mgconsole < dags/<procedure_name>.cypher`
+
+### DAG structure in state
+
+After `DagMapper` runs, `state["dags"]` is a list of dicts. Each dict has:
+
+```python
+{
+    "name": "Registration_General",
+    "spec": "TS 23.502 4.2.2.2.2",
+    "procedure": "registration",
+    "all_nfs": ["AMF", "AUSF", "UDM", "NRF", "PCF", "UE"],
+    "phases": [
+        {
+            "order": 1,
+            "nf": "UE",
+            "action": "Registration Request",
+            "keywords": ["Registration Request", "Initial Registration", "SUCI"],
+            "optional": False,
+        },
+        {
+            "order": 9,
+            "nf": "AMF",
+            "action": "Authentication/Security",
+            "keywords": ["Authentication", "Security", "AUSF", "AKA"],
+            "sub_dag": "Authentication_5G_AKA",
+            "optional": False,
+        },
+        # ... more phases
+    ]
+}
+```
+
+`all_nfs` is the deduplicated union of NF names across all phases — this becomes `nf_union` in state.
+
+### Mapping strategy
+
+`DagMapper` uses a four-tier priority cascade to map an alert to DAG(s):
+
+| Tier | Condition | Example | `mapping_confidence` |
+|------|-----------|---------|---------------------|
+| `exact_match` | `alert["labels"]["procedure"]` == DAG name | `procedure=Registration_General` | 1.0 |
+| `keyword_match` | `alertname`/description contains key | `alertname=RegistrationFailures` contains `"registration"` | 0.8 |
+| `nf_default` | `alert["labels"]["nf"]` in `NF_DEFAULT_MAP` | `nf=amf` → `["Registration_General", "Authentication_5G_AKA"]` | 0.6 |
+| `generic_fallback` | no match | any alert | 0.3 |
+
+When `mapping_method="generic_fallback"`, all three known DAGs are returned.
+A low `mapping_confidence` is forwarded to the RCA prompt so the LLM knows the procedure
+association is uncertain.
+
+### Trace ingestion and deviation detection
+
+During each investigation, `UeTracesAgent` **ingests live UE traces** into Memgraph:
+
+```cypher
+-- Creates per-investigation trace graph
+CREATE (t:IMSITrace {imsi: $imsi, incident_id: $incident_id})
+CREATE (e:TraceEvent {order: $order, nf: $nf, action: $action, timestamp: $ts})
+CREATE (t)-[:HAS_EVENT]->(e)
+-- Chains events in order
+MATCH (e1:TraceEvent {order: $n}), (e2:TraceEvent {order: $n+1})
+CREATE (e1)-[:NEXT_EVENT]->(e2)
+```
+
+Then runs a comparison query: for each `(:RefEvent)` in the reference DAG, checks whether a
+matching `(:TraceEvent)` exists at the right order with the right NF. Deviations are returned
+as `{deviation_point, expected, actual, expected_nf, actual_nf}`.
+
+### Evidence compression for the RCA prompt
+
+`compress_dag(dags, budget=rca_token_budget_dag)` strips phases to minimal fields and truncates
+if total character count exceeds `budget × 4` chars (1 token ≈ 4 chars, default budget: 800 tokens).
+This prevents the DAG — which can have 24+ phases — from overwhelming the LLM context window.
