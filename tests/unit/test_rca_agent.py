@@ -820,15 +820,20 @@ class TestCompressNfLogs:
         result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
         assert "SMF" not in result
 
-    def test_messages_never_truncated_for_dag_nf(self) -> None:
+    def test_messages_truncated_to_max_chars_for_dag_nf(self) -> None:
+        from unittest.mock import patch
         from triage_agent.agents.logs_agent import compress_nf_logs
+        from triage_agent.config import TriageAgentConfig
         long_msg = "x" * 5000
         logs = {
             "AMF": [{"level": "ERROR", "message": long_msg, "timestamp": 1000,
                      "matched_phase": None, "matched_pattern": None}]
         }
-        result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
-        assert result["AMF"][0]["message"] == long_msg
+        with patch("triage_agent.agents.logs_agent.get_config") as mock_cfg:
+            mock_cfg.return_value = TriageAgentConfig(rca_log_max_message_chars=200, rca_token_budget_logs=10_000)
+            result = compress_nf_logs(logs, nf_union=["AMF"], token_budget=10000)
+        assert len(result["AMF"][0]["message"]) <= 201
+        assert result["AMF"][0]["message"].endswith("…")
 
     def test_dag_nf_included_even_when_over_budget(self) -> None:
         from triage_agent.agents.logs_agent import compress_nf_logs
