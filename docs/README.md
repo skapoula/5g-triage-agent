@@ -83,3 +83,55 @@ curl -X POST http://localhost:8000/webhook \
 curl http://localhost:8000/incidents/<incident_id>
 # {"status": "pending"} while running; {"status": "complete", "final_report": {...}} when done
 ```
+
+## 4. System Architecture
+
+```mermaid
+flowchart TD
+    A["Alertmanager"] -->|webhook| B["LangGraph Orchestrator"]
+    B --> C(["START"])
+
+    C --> D["InfraAgent\nCheck pod metrics via MCP"]
+    C --> DM["DagMapper\nAlert → 3GPP procedure DAGs"]
+
+    DM --> E["NfMetricsAgent\nMCP: Prometheus"]
+    DM --> E2["NfLogsAgent\nMCP: Loki (+ HTTP fallback)"]
+    DM --> E3["UeTracesAgent\nMCP: Loki + Memgraph ingest"]
+
+    E --> F["EvidenceQuality"]
+    E2 --> F
+    E3 --> F
+
+    D --> JR
+    F --> JR["join_for_rca\n(compress evidence)"]
+    JR --> G["RCAAgent\nLLM analysis"]
+
+    G --> RETRY{"should_retry?"}
+    RETRY -->|"retry"| INC["increment_attempt"]
+    INC --> G
+    RETRY -->|"finalize"| H["finalize_report"]
+    H --> I(["END"])
+```
+
+### How the pipeline works
+
+**Parallel start:** `InfraAgent` and `DagMapper` both start immediately from `START`. They are
+independent — infra triage does not need to know which 3GPP procedures are involved.
+
+**Evidence fan-out:** Once `DagMapper` writes `nf_union` (the list of NFs involved in the matched
+procedures), LangGraph fans out to `NfMetricsAgent`, `NfLogsAgent`, and `UeTracesAgent` in
+parallel. All three query different data sources for the same set of NFs over the same time window.
+
+**Evidence convergence:** All three collection agents write to `EvidenceQuality`, which scores
+the diversity of evidence collected (0.10–0.95 depending on which sources have data).
+
+**`join_for_rca` barrier:** This node has two incoming edges — from `InfraAgent` and from
+`EvidenceQuality`. LangGraph waits for **both** to complete before executing `join_for_rca`.
+This guarantees that `infra_findings` and `infra_score` are in state before the LLM prompt is
+built. `join_for_rca` compresses all evidence sections to fit within the LLM context budget,
+writing the result to `state["compressed_evidence"]`.
+
+**RCAAgent and retry loop:** RCAAgent reads `compressed_evidence` and calls the LLM. If confidence
+is below the threshold (0.70 by default, 0.65 if evidence quality ≥ 0.80), `should_retry` routes
+to `increment_attempt → rca_agent` for a second pass. Hard limit: `max_attempts=2`. After the
+final attempt, `finalize_report` writes `state["final_report"]`.
