@@ -196,7 +196,7 @@ For each matched DAG ID, fetches the full DAG dict from Memgraph via Bolt (Cyphe
 **Writes to state:**
 - `procedure_names: list[str]` — e.g. `["Registration_General", "Authentication_5G_AKA"]`
 - `dag_ids: list[str]` — same values (DAG name = DAG ID in this system)
-- `dags: list[dict]` — full DAG dicts with phases, NFs, failure_patterns
+- `dags: list[dict]` — full DAG dicts with phases, NF names, sub-dag references
 - `nf_union: list[str]` — deduplicated union of `all_nfs` across all matched DAGs
 - `mapping_confidence: float`
 - `mapping_method: str` — `"exact_match"` | `"keyword_match"` | `"nf_default"` | `"generic_fallback"`
@@ -240,7 +240,7 @@ of the RCA prompt).
 **Reads from state:**
 - `nf_union: list[str]` — which NFs to query
 - `alert["startsAt"]` — defines the log time window
-- `dags: list[dict]` — `failure_patterns` used to annotate log entries with matched DAG phases
+- `dags: list[dict]` — used to attempt log annotation against DAG `failure_patterns` (currently a no-op: the field is not loaded from Memgraph)
 - `incident_id` — for artifact snapshots
 
 **How it works:**
