@@ -522,3 +522,76 @@ as `{deviation_point, expected, actual, expected_nf, actual_nf}`.
 `compress_dag(dags, budget=rca_token_budget_dag)` strips phases to minimal fields and truncates
 if total character count exceeds `budget × 4` chars (1 token ≈ 4 chars, default budget: 800 tokens).
 This prevents the DAG — which can have 24+ phases — from overwhelming the LLM context window.
+
+## 7. Time Dimension
+
+Time is central to the system. Every evidence collection agent uses the alert timestamp as an
+anchor, and the RCA prompt instructs the LLM to use temporal ordering to distinguish root causes
+from downstream symptoms.
+
+### Evidence window
+
+All evidence is collected within a shared window anchored to `alert["startsAt"]`:
+
+```
+alert_time − alert_lookback_seconds  →  alert_time + alert_lookahead_seconds
+           (default: 300s = 5 min)              (default: 60s = 1 min)
+```
+
+`alert_time` is parsed from the ISO 8601 `startsAt` field to a Unix epoch float by
+`parse_timestamp()` in `utils.py`. This window is applied independently by:
+- `InfraAgent` — scopes pod restart queries
+- `NfMetricsAgent` — Prometheus `start`/`end` params
+- `NfLogsAgent` — Loki `start`/`end` nanosecond timestamps
+
+### Prometheus range queries (NfMetricsAgent)
+
+The window becomes `start` and `end` Unix timestamps in the Prometheus `/api/v1/query_range` API.
+Step: `promql_range_step=15s` (configurable). A 5-minute window at 15s step returns ~20 data
+points per metric per NF.
+
+### Loki queries (NfLogsAgent)
+
+Loki's API uses nanosecond epoch timestamps. The agent multiplies the Unix timestamp by `1e9`.
+Max log lines returned per query: `loki_query_limit=1000`. If a high-traffic NF exceeds 1000 log
+lines in the window, the earliest entries are silently dropped — raise `loki_query_limit` if
+you suspect missing logs during high-volume incidents.
+
+### IMSI time windows (UeTracesAgent)
+
+Two distinct windows with different purposes:
+
+| Window | Config | Default | Purpose |
+|--------|--------|---------|---------|
+| **Discovery window** | `imsi_discovery_window_seconds` | 30s | Narrow window around `alert_time`; finds which IMSIs were active at failure |
+| **Trace window** | `imsi_trace_lookback_seconds` | 120s | Wide lookback per IMSI; captures the full signalling procedure that preceded failure |
+
+The narrow discovery window prevents collecting IMSIs from unrelated sessions. The wide trace
+window ensures the full registration or authentication procedure (which may have started 1–2
+minutes before the alert) is captured.
+
+### Temporal precedence in RCA
+
+The LLM prompt explicitly instructs the model to use temporal ordering when reasoning about
+root cause:
+
+> "Use temporal precedence (earliest anomaly in time window): the NF that shows the first
+> anomalous signal is more likely the root cause than NFs that deviate later."
+
+Each item in `state["evidence_chain"]` (written by RCAAgent) carries a `timestamp` field, so
+the model can reason about event ordering in its JSON output. The `failed_phase` output field
+identifies the DAG phase order number where failure first manifested.
+
+### Incident store TTL
+
+Completed incident entries in the in-memory `_incident_store` expire after `incident_ttl_seconds=3600`
+(1 hour). `_evict_stale()` is called on every incoming POST to the `/webhook` endpoint — no
+background thread required. This prevents unbounded memory growth in long-running deployments
+without requiring an external cache.
+
+### LangSmith trace timestamps
+
+When `LANGCHAIN_TRACING_V2=true`, every `@traceable`-decorated agent function emits a span with
+wall-clock start/end times. In the LangSmith UI, span timestamps let you verify the topology:
+`infra_agent` and `evidence_quality` spans should both complete before `join_for_rca` starts.
+If `join_for_rca` starts before `infra_agent` finishes, the graph wiring is incorrect.
