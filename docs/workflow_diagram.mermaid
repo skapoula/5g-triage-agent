@@ -21,7 +21,7 @@ flowchart TD
     G --> RETRY{"should_retry?\n(needs_more_evidence\n+ attempt_count < max)"}
     RETRY -->|"retry"| INC["<b>increment_attempt</b>"]
     INC --> G
-    RETRY -->|"done"| H["<b>finalize_report</b><br/><i>RCA summary + artifacts</i>"]
+    RETRY -->|"finalize"| H["<b>finalize_report</b><br/><i>RCA summary + artifacts</i>"]
     H --> I(["<b>END</b>"])
 
     style A fill:#0f3460,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
