@@ -38,6 +38,7 @@ log "Applying TriageAgent ConfigMap..."
 kubectl apply -n "$TRIAGE_NS" -f k8s/triage-agent-configmap.yaml
 
 log "Applying deployment..."
+kubectl delete deployment triage-agent -n "$TRIAGE_NS" --ignore-not-found
 kubectl apply -n "$TRIAGE_NS" -f k8s/deployment-with-init.yaml
 
 log "Applying network policies..."
