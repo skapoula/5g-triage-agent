@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# phase0-preflight.sh — verify cluster is ready before testing
+# phase0-preflight.sh — verify cluster + local Memgraph are ready before testing
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/helpers.sh"
 log "=== Phase 0: Pre-flight Checks ==="
 ERRORS=0
 
-# 1. Free5GC NF pods all Running 2/2
+# 1. Free5GC NF pods all Running
 log "Checking Free5GC NF pods..."
 kubectl get pods -n "$CORE_NS" | tee "$RESULTS_DIR/phase0-pods.txt"
 NOT_RUNNING=$(kubectl get pods -n "$CORE_NS" \
@@ -60,7 +60,19 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-# 5. LLM inference service responding
+# 5. Local Memgraph reachable on bolt port 7687
+log "Checking local Memgraph (bolt://localhost:7687)..."
+MG_COUNT=$(echo "MATCH (n) RETURN count(n);" \
+  | mgconsole -host localhost -port 7687 2>/dev/null \
+  | grep -oP '\d+' | tail -1 || echo "UNREACHABLE")
+if [[ "$MG_COUNT" != "UNREACHABLE" ]]; then
+  pass "Local Memgraph reachable — $MG_COUNT node(s) in graph"
+else
+  fail "Local Memgraph not reachable on port 7687 — start Memgraph before proceeding"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# 6. LLM inference service responding
 log "Checking LLM inference service..."
 LLM_URL="http://qwen3-4b.ml-serving.svc.cluster.local/v1/models"
 LLM_MODEL=$(curl -s --max-time 10 "$LLM_URL" | jq -r '.data[0].id // "NOT FOUND"')
@@ -74,7 +86,7 @@ fi
 # Summary
 echo ""
 if [[ "$ERRORS" -eq 0 ]]; then
-  pass "Phase 0 PASSED — cluster is ready"
+  pass "Phase 0 PASSED — cluster + local Memgraph are ready"
   exit 0
 else
   fail "Phase 0 FAILED — $ERRORS check(s) failed — do not proceed"

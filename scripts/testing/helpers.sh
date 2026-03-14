@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# helpers.sh — shared functions for all live test scripts
+# helpers.sh — shared functions for all live test scripts (local-pod variant)
 set -euo pipefail
 
 # ── Environment ──────────────────────────────────────────────────────────────
 export WEBHOOK_URL="${WEBHOOK_URL:-http://localhost:8000}"
-export TRIAGE_POD="${TRIAGE_POD:-}"
-export RESULTS_DIR="${RESULTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/test-results/$(date +%Y%m%d-%H%M%S)}"
-export PROMETHEUS_URL="http://kube-prom-kube-prometheus-prometheus.monitoring:9090"
-export LOKI_URL="http://loki.monitoring:3100"
-export UERANSIM_NS="5g-core"
+export ARTIFACTS_DIR="${ARTIFACTS_DIR:-/workspace/net-rca/artifacts}"
+export RESULTS_DIR="${RESULTS_DIR:-/workspace/net-rca/test-results/$(date +%Y%m%d-%H%M%S)}"
+export PROMETHEUS_URL="${PROMETHEUS_URL:-http://kube-prom-kube-prometheus-prometheus.monitoring:9090}"
+export LOKI_URL="${LOKI_URL:-http://loki.monitoring:3100}"
+export MEMGRAPH_HOST="${MEMGRAPH_HOST:-localhost}"
+export MEMGRAPH_PORT="${MEMGRAPH_PORT:-7687}"
 export CORE_NS="5g-core"
-export TRIAGE_NS="monitoring"
+export TRIAGE_LOG="${TRIAGE_LOG:-/tmp/triage-agent.log}"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -20,16 +21,13 @@ pass() { echo "[PASS] $*" | tee -a "$RESULTS_DIR/summary.txt"; }
 fail() { echo "[FAIL] $*" | tee -a "$RESULTS_DIR/summary.txt"; }
 info() { echo "[INFO] $*"; }
 
-# ── Resolve pod name ──────────────────────────────────────────────────────────
-resolve_triage_pod() {
-  TRIAGE_POD=$(kubectl get pod -n "$TRIAGE_NS" -l app=triage-agent \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [[ -z "$TRIAGE_POD" ]]; then
-    fail "triage-agent pod not found in namespace $TRIAGE_NS"
+# ── Verify local TriageAgent is running ───────────────────────────────────────
+check_local_agent() {
+  if ! curl -s --max-time 3 "$WEBHOOK_URL/health" > /dev/null 2>&1; then
+    fail "TriageAgent not reachable at $WEBHOOK_URL — run phase05-start-local.sh first"
     exit 1
   fi
-  export TRIAGE_POD
-  log "Using pod: $TRIAGE_POD"
+  log "TriageAgent reachable at $WEBHOOK_URL"
 }
 
 # ── Webhook trigger ───────────────────────────────────────────────────────────
@@ -93,7 +91,6 @@ poll_incident() {
 
 # ── Per-IMSI Loki check ───────────────────────────────────────────────────────
 # Usage: check_imsi_loki [lookback_minutes=5]
-# Prints each IMSI with stream count; returns 1 if any IMSI has 0 streams
 check_imsi_loki() {
   local lookback_min=${1:-5}
   local start end all_found=true
@@ -119,36 +116,44 @@ check_imsi_loki() {
   $all_found && return 0 || return 1
 }
 
-# ── Token counter ─────────────────────────────────────────────────────────────
+# ── Token counter (local filesystem) ─────────────────────────────────────────
 # Usage: collect_token_count <incident_id> <artifact_filename>
-# Prints token count (1 token ≈ 4 chars)
 collect_token_count() {
   local incident_id=$1
   local artifact=$2
-  local content
+  local artifact_path="$ARTIFACTS_DIR/$incident_id/$artifact"
 
-  content=$(kubectl exec -n "$TRIAGE_NS" "$TRIAGE_POD" -c triage-agent -- \
-    cat "/app/artifacts/$incident_id/$artifact" 2>/dev/null || echo "")
-
-  if [[ -z "$content" ]]; then
-    echo "  $artifact: NOT FOUND"
+  if [[ ! -f "$artifact_path" ]]; then
+    echo "  $artifact: NOT FOUND (checked $artifact_path)"
     return 1
   fi
 
   local chars token_est
-  chars=${#content}
+  chars=$(wc -c < "$artifact_path")
   token_est=$((chars / 4))
   echo "  $artifact: ~${token_est} tokens (${chars} chars)"
   echo "${incident_id}|${artifact}|${token_est}" >> "$RESULTS_DIR/token_counts.txt"
 }
 
-# ── Pull all artifacts for an incident ───────────────────────────────────────
+# ── Copy local artifacts to results dir ──────────────────────────────────────
 pull_artifacts() {
   local incident_id=$1
+  local src="$ARTIFACTS_DIR/$incident_id"
   local dest="$RESULTS_DIR/artifacts/$incident_id"
+
   mkdir -p "$dest"
-  kubectl cp "$TRIAGE_NS/$TRIAGE_POD:/app/artifacts/$incident_id" \
-    "$dest" -c triage-agent 2>/dev/null || \
-    log "Warning: could not pull artifacts for $incident_id"
-  log "Artifacts saved to $dest"
+  if [[ -d "$src" ]]; then
+    cp -r "$src/." "$dest/"
+    log "Artifacts copied: $src → $dest"
+  else
+    log "Warning: no artifact directory found at $src"
+  fi
+}
+
+# ── Memgraph query helper ─────────────────────────────────────────────────────
+# Usage: mgquery <cypher_query>
+# Returns: mgconsole output
+mgquery() {
+  local query="$1"
+  echo "$query" | mgconsole -host "$MEMGRAPH_HOST" -port "$MEMGRAPH_PORT" 2>/dev/null
 }

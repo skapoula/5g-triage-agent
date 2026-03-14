@@ -1,36 +1,41 @@
 #!/usr/bin/env bash
-# phase1-health.sh — verify TriageAgent pod health, DAGs, and endpoints
+# phase1-health.sh — verify local TriageAgent health, DAGs, and endpoints
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
-resolve_triage_pod
+check_local_agent
 
 log "=== Phase 1: Health Verification ==="
 ERRORS=0
 
-# 1. Container states
-log "Checking container states..."
-kubectl get pods -n "$TRIAGE_NS" | tee "$RESULTS_DIR/phase1-pods.txt"
+# 1. uvicorn process alive
+log "Checking uvicorn process..."
+if [[ -f /tmp/triage-agent.pid ]]; then
+  UVICORN_PID=$(cat /tmp/triage-agent.pid)
+  if kill -0 "$UVICORN_PID" 2>/dev/null; then
+    pass "uvicorn process alive (PID $UVICORN_PID)"
+  else
+    fail "uvicorn PID $UVICORN_PID is not running"
+    ERRORS=$((ERRORS+1))
+  fi
+else
+  fail "No PID file at /tmp/triage-agent.pid — was phase05-start-local.sh run?"
+  ERRORS=$((ERRORS+1))
+fi
 
-DAG_LOADER_STATUS=$(kubectl get pod -n "$TRIAGE_NS" "$TRIAGE_POD" \
-  -o jsonpath='{.status.initContainerStatuses[?(@.name=="dag-loader")].state.terminated.reason}' \
-  2>/dev/null || echo "")
-MEMGRAPH_READY=$(kubectl get pod -n "$TRIAGE_NS" "$TRIAGE_POD" \
-  -o jsonpath='{.status.containerStatuses[?(@.name=="memgraph")].ready}' 2>/dev/null || echo "false")
-TRIAGE_READY=$(kubectl get pod -n "$TRIAGE_NS" "$TRIAGE_POD" \
-  -o jsonpath='{.status.containerStatuses[?(@.name=="triage-agent")].ready}' 2>/dev/null || echo "false")
+# 2. Port 8000 listening
+log "Checking port 8000 is open..."
+if lsof -ti:8000 > /dev/null 2>&1; then
+  pass "Port 8000 is open"
+else
+  fail "Port 8000 is not open — TriageAgent may not be listening"
+  ERRORS=$((ERRORS+1))
+fi
 
-[[ "$DAG_LOADER_STATUS" == "Completed" ]] && \
-  pass "dag-loader: Completed" || { fail "dag-loader: $DAG_LOADER_STATUS"; ERRORS=$((ERRORS+1)); }
-[[ "$MEMGRAPH_READY" == "true" ]] && \
-  pass "memgraph: Ready" || { fail "memgraph: not ready"; ERRORS=$((ERRORS+1)); }
-[[ "$TRIAGE_READY" == "true" ]] && \
-  pass "triage-agent: Ready" || { fail "triage-agent: not ready"; ERRORS=$((ERRORS+1)); }
-
-# 2. DAG names loaded (exact PascalCase required)
-log "Verifying DAGs in Memgraph..."
-DAG_OUTPUT=$(kubectl exec -n "$TRIAGE_NS" "$TRIAGE_POD" -c memgraph -- \
-  bash -c 'echo "MATCH (t:ReferenceTrace) RETURN t.name;" | mgconsole' 2>/dev/null \
+# 3. DAG names loaded in local Memgraph (exact PascalCase required)
+log "Verifying DAGs in local Memgraph..."
+DAG_OUTPUT=$(echo "MATCH (t:ReferenceTrace) RETURN t.name;" \
+  | mgconsole -host localhost -port 7687 2>/dev/null \
   | tee "$RESULTS_DIR/phase1-dags.txt")
 
 for DAG_NAME in "Registration_General" "Authentication_5G_AKA" "PDU_Session_Establishment"; do
@@ -42,7 +47,7 @@ for DAG_NAME in "Registration_General" "Authentication_5G_AKA" "PDU_Session_Esta
   fi
 done
 
-# 3. /health endpoint — all dependencies green
+# 4. /health endpoint — all dependencies green
 log "Checking /health endpoint..."
 HEALTH=$(curl -s "$WEBHOOK_URL/health" | tee "$RESULTS_DIR/phase1-health.json")
 echo "$HEALTH" | jq .
@@ -56,7 +61,7 @@ LOKI_OK=$(echo "$HEALTH" | jq -r '.loki')
   pass "/health: healthy, memgraph=true, prometheus=true, loki=true" || \
   { fail "/health check failed: $HEALTH"; ERRORS=$((ERRORS+1)); }
 
-# 4. /health/ready
+# 5. /health/ready
 log "Checking /health/ready..."
 READY_CODE=$(curl -o /dev/null -s -w "%{http_code}" "$WEBHOOK_URL/health/ready")
 [[ "$READY_CODE" == "200" ]] && \

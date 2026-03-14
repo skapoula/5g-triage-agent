@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# phase4-e2e.sh — 4 E2E scenarios with inject/trigger/verify/restore
+# phase4-e2e.sh — 4 E2E scenarios with inject/trigger/verify/restore (local-pod)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
-resolve_triage_pod
+check_local_agent
 
 log "=== Phase 4: End-to-End Validation ==="
 ERRORS=0
 SCENARIO_RESULTS=()
 
 # ── Helper: verify RCA fields ─────────────────────────────────────────────────
-# Usage: verify_rca <incident_id> <expected_root_nf_regex> <expected_layer> <scenario_label>
 verify_rca() {
   local incident_id=$1 expected_nf_re=$2 expected_layer=$3 label=$4
   local report root_nf layer confidence fail_mode eq_score
@@ -55,7 +54,6 @@ FAIL_41=$(echo "$REPORT_41" | jq -r '.final_report.failure_mode // ""')
 [[ "$FAIL_41" != "llm_timeout" ]] && pass "4.1: LLM responded without timeout" \
   || { fail "4.1: llm_timeout"; ERRORS=$((ERRORS+1)); }
 
-# Record baseline token counts
 log "Recording baseline token counts..."
 for artifact in pre_filter_metrics.json post_filter_metrics.json \
                 pre_filter_logs.json post_filter_logs.json; do
@@ -82,13 +80,14 @@ INCIDENT_42=$(trigger_webhook "RegistrationFailures" "amf")
 log "Incident: $INCIDENT_42"
 REPORT_42=$(poll_incident "$INCIDENT_42" 360)
 
-verify_rca "$INCIDENT_42" "^AMF$" "infrastructure" "4.2" && SCENARIO_RESULTS+=("4.2:REG_FAIL:PASS") || SCENARIO_RESULTS+=("4.2:REG_FAIL:FAIL")
+verify_rca "$INCIDENT_42" "^AMF$" "infrastructure" "4.2" \
+  && SCENARIO_RESULTS+=("4.2:REG_FAIL:PASS") || SCENARIO_RESULTS+=("4.2:REG_FAIL:FAIL")
 pull_artifacts "$INCIDENT_42"
 
 log "Restoring: scaling amf back to 1..."
 kubectl scale deployment amf -n "$CORE_NS" --replicas=1
 kubectl rollout status deployment amf -n "$CORE_NS"
-sleep 15  # allow AMF to complete NRF registration
+sleep 15
 
 kubectl rollout restart deployment ueransim -n "$CORE_NS"
 kubectl rollout status deployment ueransim -n "$CORE_NS"
@@ -108,7 +107,6 @@ log "Injecting failure: patching op key to zeroed value..."
 kubectl get configmap ue-config -n "$CORE_NS" -o yaml \
   | sed "s/op: '8e27b6af0e692e750f32667a3b14605d'/op: '00000000000000000000000000000000'/" \
   | kubectl apply -f -
-# Verify
 OP_PATCHED=$(kubectl get configmap ue-config -n "$CORE_NS" \
   -o jsonpath='{.data.ue-base\.yaml}' | grep "^op:" | head -1)
 log "  op field after patch: $OP_PATCHED"
@@ -121,7 +119,8 @@ INCIDENT_43=$(trigger_webhook "AuthenticationFailures" "ausf")
 log "Incident: $INCIDENT_43"
 REPORT_43=$(poll_incident "$INCIDENT_43" 360)
 
-verify_rca "$INCIDENT_43" "^(AUSF|UDM)$" "application" "4.3" && SCENARIO_RESULTS+=("4.3:AUTH_FAIL:PASS") || SCENARIO_RESULTS+=("4.3:AUTH_FAIL:FAIL")
+verify_rca "$INCIDENT_43" "^(AUSF|UDM)$" "application" "4.3" \
+  && SCENARIO_RESULTS+=("4.3:AUTH_FAIL:PASS") || SCENARIO_RESULTS+=("4.3:AUTH_FAIL:FAIL")
 pull_artifacts "$INCIDENT_43"
 
 log "Restoring: applying ue-config backup..."
@@ -156,7 +155,8 @@ INCIDENT_44=$(trigger_webhook "PDUSessionFailures" "smf")
 log "Incident: $INCIDENT_44"
 REPORT_44=$(poll_incident "$INCIDENT_44" 360)
 
-verify_rca "$INCIDENT_44" "^SMF$" "application" "4.4" && SCENARIO_RESULTS+=("4.4:PDU_FAIL:PASS") || SCENARIO_RESULTS+=("4.4:PDU_FAIL:FAIL")
+verify_rca "$INCIDENT_44" "^SMF$" "application" "4.4" \
+  && SCENARIO_RESULTS+=("4.4:PDU_FAIL:PASS") || SCENARIO_RESULTS+=("4.4:PDU_FAIL:FAIL")
 pull_artifacts "$INCIDENT_44"
 
 log "Restoring: applying ue-config backup (reuse from 4.3)..."
@@ -176,7 +176,6 @@ for result in "${SCENARIO_RESULTS[@]}"; do
   echo "  $result" | tee -a "$RESULTS_DIR/phase4-summary.txt"
 done
 
-# Count failure scenario successes (4.2, 4.3, 4.4 only — 4.1 is sunny day)
 for result in "${SCENARIO_RESULTS[@]:1}"; do
   [[ "$result" == *":PASS" ]] && CORRECT=$((CORRECT+1)) || true
 done

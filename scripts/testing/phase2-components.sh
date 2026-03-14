@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# phase2-components.sh — generate traffic + verify each agent performs as designed
+# phase2-components.sh — generate traffic + verify each agent performs as designed (local-pod)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
-resolve_triage_pod
+check_local_agent
 
 log "=== Phase 2: Component Validation ==="
 ERRORS=0
@@ -59,12 +59,9 @@ fi
 
 # ── Step 2.3: NfMetricsAgent ──────────────────────────────────────────────────
 log "Step 2.3 — Checking NfMetricsAgent artifacts..."
-METRICS_FILE=$(kubectl exec -n "$TRIAGE_NS" "$TRIAGE_POD" -c triage-agent -- \
-  ls "/app/artifacts/$INCIDENT/" 2>/dev/null | grep "post_filter_metrics" || true)
-if [[ -n "$METRICS_FILE" ]]; then
-  METRICS_CONTENT=$(kubectl exec -n "$TRIAGE_NS" "$TRIAGE_POD" -c triage-agent -- \
-    cat "/app/artifacts/$INCIDENT/post_filter_metrics.json" 2>/dev/null)
-  NF_COUNT=$(echo "$METRICS_CONTENT" | jq 'keys | length' 2>/dev/null || echo 0)
+METRICS_FILE="$ARTIFACTS_DIR/$INCIDENT/post_filter_metrics.json"
+if [[ -f "$METRICS_FILE" ]]; then
+  NF_COUNT=$(jq 'keys | length' "$METRICS_FILE" 2>/dev/null || echo 0)
   if [[ "$NF_COUNT" -gt 0 ]]; then
     pass "NfMetricsAgent: post_filter_metrics.json has $NF_COUNT NFs"
   else
@@ -72,15 +69,17 @@ if [[ -n "$METRICS_FILE" ]]; then
     ERRORS=$((ERRORS+1))
   fi
 else
-  fail "NfMetricsAgent: post_filter_metrics.json not found"
+  fail "NfMetricsAgent: post_filter_metrics.json not found at $METRICS_FILE"
   ERRORS=$((ERRORS+1))
 fi
 
 # ── Step 2.4: NfLogsAgent ────────────────────────────────────────────────────
 log "Step 2.4 — Checking NfLogsAgent artifacts..."
-LOGS_CONTENT=$(kubectl exec -n "$TRIAGE_NS" "$TRIAGE_POD" -c triage-agent -- \
-  cat "/app/artifacts/$INCIDENT/post_filter_logs.json" 2>/dev/null || true)
-LOG_NF_COUNT=$(echo "$LOGS_CONTENT" | jq 'keys | length' 2>/dev/null || echo 0)
+LOGS_FILE="$ARTIFACTS_DIR/$INCIDENT/post_filter_logs.json"
+LOG_NF_COUNT=0
+if [[ -f "$LOGS_FILE" ]]; then
+  LOG_NF_COUNT=$(jq 'keys | length' "$LOGS_FILE" 2>/dev/null || echo 0)
+fi
 if [[ "$LOG_NF_COUNT" -gt 0 ]]; then
   pass "NfLogsAgent: post_filter_logs.json has $LOG_NF_COUNT NFs"
 else
@@ -90,9 +89,9 @@ fi
 
 # ── Step 2.5: UeTracesAgent ──────────────────────────────────────────────────
 log "Step 2.5 — Checking UeTracesAgent Memgraph write..."
-TRACE_COUNT=$(kubectl exec -n "$TRIAGE_NS" "$TRIAGE_POD" -c memgraph -- \
-  bash -c 'echo "MATCH (t:CapturedTrace) RETURN count(t);" | mgconsole' \
-  2>/dev/null | grep -oP '\d+' | tail -1 || echo 0)
+TRACE_COUNT=$(echo "MATCH (t:CapturedTrace) RETURN count(t);" \
+  | mgconsole -host localhost -port 7687 2>/dev/null \
+  | grep -oP '\d+' | tail -1 || echo 0)
 if [[ "$TRACE_COUNT" -gt 0 ]]; then
   pass "UeTracesAgent: $TRACE_COUNT CapturedTrace(s) in Memgraph"
 else
@@ -128,7 +127,7 @@ else
   ERRORS=$((ERRORS+1))
 fi
 
-# ── Pull artifacts ────────────────────────────────────────────────────────────
+# ── Copy artifacts ────────────────────────────────────────────────────────────
 pull_artifacts "$INCIDENT"
 
 echo ""
