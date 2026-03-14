@@ -103,7 +103,7 @@ check_imsi_loki() {
     imsi=$(printf "imsi-20893000000000%d" "$i")
     local count
     count=$(curl -s \
-      --data-urlencode "query={namespace=\"$CORE_NS\", pod=~\".*amf.*\"} |= \"$imsi\"" \
+      --data-urlencode "query={k8s_namespace_name=\"$CORE_NS\", k8s_pod_name=~\".*amf.*\"} |= \"$imsi\"" \
       --data-urlencode "start=$start" \
       --data-urlencode "end=$end" \
       --data-urlencode "limit=1" \
