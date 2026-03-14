@@ -2,8 +2,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: triage-agent
+  namespace: monitoring
 spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: triage-agent
   template:
+    metadata:
+      labels:
+        app: triage-agent
     spec:
       # Init container: preload DAGs into Memgraph via Cypher scripts
       initContainers:
