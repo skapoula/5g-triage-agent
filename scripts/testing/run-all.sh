@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Create a single timestamped results directory shared across all phases
-export RESULTS_DIR="/workspace/net-rca/test-results/$(date +%Y%m%d-%H%M%S)"
+export RESULTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)/test-results/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RESULTS_DIR"
 echo "Results directory: $RESULTS_DIR"
 

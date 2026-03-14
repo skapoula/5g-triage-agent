@@ -5,7 +5,7 @@ set -euo pipefail
 # ── Environment ──────────────────────────────────────────────────────────────
 export WEBHOOK_URL="${WEBHOOK_URL:-http://localhost:8000}"
 export TRIAGE_POD="${TRIAGE_POD:-}"
-export RESULTS_DIR="${RESULTS_DIR:-/workspace/net-rca/test-results/$(date +%Y%m%d-%H%M%S)}"
+export RESULTS_DIR="${RESULTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/test-results/$(date +%Y%m%d-%H%M%S)}"
 export PROMETHEUS_URL="http://kube-prom-kube-prometheus-prometheus.monitoring:9090"
 export LOKI_URL="http://loki.monitoring:3100"
 export UERANSIM_NS="5g-core"

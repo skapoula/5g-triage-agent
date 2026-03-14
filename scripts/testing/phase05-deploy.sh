@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/helpers.sh"
 
 log "=== Phase 0.5: Build & Deploy TriageAgent ==="
-cd /workspace/net-rca
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
 
 # 1. Build container image
 log "Building triage-agent:v3.2..."
