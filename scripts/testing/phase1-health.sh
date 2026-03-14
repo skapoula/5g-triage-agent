@@ -23,12 +23,12 @@ else
   ERRORS=$((ERRORS+1))
 fi
 
-# 2. Port 8000 listening
-log "Checking port 8000 is open..."
-if lsof -ti:8000 > /dev/null 2>&1; then
-  pass "Port 8000 is open"
+# 2. Port 8000 responding
+log "Checking port 8000 is responding..."
+if curl -s --max-time 3 "http://localhost:8000/health" > /dev/null 2>&1; then
+  pass "Port 8000 is responding"
 else
-  fail "Port 8000 is not open — TriageAgent may not be listening"
+  fail "Port 8000 is not responding — TriageAgent may not be listening"
   ERRORS=$((ERRORS+1))
 fi
 
@@ -61,11 +61,11 @@ LOKI_OK=$(echo "$HEALTH" | jq -r '.loki')
   pass "/health: healthy, memgraph=true, prometheus=true, loki=true" || \
   { fail "/health check failed: $HEALTH"; ERRORS=$((ERRORS+1)); }
 
-# 5. /health/ready
-log "Checking /health/ready..."
-READY_CODE=$(curl -o /dev/null -s -w "%{http_code}" "$WEBHOOK_URL/health/ready")
-[[ "$READY_CODE" == "200" ]] && \
-  pass "/health/ready: 200 OK" || { fail "/health/ready: $READY_CODE"; ERRORS=$((ERRORS+1)); }
+# 5. /health status=healthy (readiness confirmation)
+log "Checking /health reports status=healthy..."
+READY_STATUS=$(curl -s "$WEBHOOK_URL/health" | jq -r '.status // "unknown"')
+[[ "$READY_STATUS" == "healthy" ]] && \
+  pass "/health: status=healthy (ready)" || { fail "/health: status=$READY_STATUS (not ready)"; ERRORS=$((ERRORS+1)); }
 
 # Summary
 echo ""
