@@ -41,7 +41,7 @@ log "Applying deployment..."
 kubectl apply -n "$TRIAGE_NS" -f k8s/deployment-with-init.yaml
 
 log "Applying network policies..."
-kubectl apply -n "$TRIAGE_NS" -f k8s/triage-agent-to-qwen3-4b-netpol.yaml
+kubectl apply -f k8s/triage-agent-to-qwen3-4b-netpol.yaml
 
 # 4. Patch imagePullPolicy: Never (local image)
 log "Patching imagePullPolicy to Never..."
