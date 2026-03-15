@@ -451,6 +451,21 @@ def rca_agent_first_attempt(state: TriageState) -> dict[str, Any]:
     evidence_chain = analysis.get("evidence_chain", [])
     layer = analysis.get("layer", "application")
 
+    # Deterministic override: if infra_score is above the root-cause threshold,
+    # force layer=infrastructure regardless of LLM determination. The LLM may
+    # misclassify when log evidence is present (e.g. "SBI server stopped" appears
+    # as application evidence but is caused by the pod being absent — an infra event).
+    _cfg_override = get_config()
+    if state.get("infra_score", 0.0) >= _cfg_override.infra_root_cause_threshold:
+        if layer != "infrastructure":
+            logger.info(
+                "Overriding LLM layer=%s → infrastructure (infra_score=%.2f >= threshold=%.2f)",
+                layer,
+                state.get("infra_score", 0.0),
+                _cfg_override.infra_root_cause_threshold,
+            )
+        layer = "infrastructure"
+
     # Decision logic: determine if more evidence is needed
     cfg = get_config()
     min_confidence = cfg.min_confidence_default

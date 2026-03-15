@@ -323,8 +323,7 @@ def compress_nf_logs(
                     kept.insert(0, entry)
                 else:
                     break
-            if kept:
-                result[nf] = kept
+            result[nf] = kept  # always include DAG NF key, even if empty after trimming
     else:
         result = dict(dag_nf_logs)
 
