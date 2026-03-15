@@ -824,14 +824,14 @@ class TestReplicaStatus:
         assert absent == set()
 
     def test_compute_infrastructure_score_zero_replicas(self) -> None:
-        """score >= 0.20 when a DAG NF has 0 available replicas."""
+        """score == 1.0 when a DAG NF has 0 available replicas (short-circuit)."""
         metrics = {
             "replicas_available": [
                 {"metric": {"deployment": "amf", "report": "replicas_available"}, "value": [0, "0"]},
             ]
         }
         score = compute_infrastructure_score(metrics, ["AMF"])
-        assert score >= 0.20, "pod_status factor should contribute when replica count is 0"
+        assert score == pytest.approx(1.0), "absent deployment must score 1.0 (definitive infrastructure event)"
 
     def test_compute_infrastructure_score_nonzero_replicas_unchanged(self) -> None:
         """Existing 0-restart, running-pod behavior unchanged when replicas > 0."""
@@ -875,6 +875,6 @@ class TestInfraAgentZeroReplica:
 
         monkeypatch.setattr(infra_module, "_fetch_prometheus_metrics", fake_fetch)
         result = infra_agent(sample_initial_state)
-        assert result["infra_score"] > 0, "Expected non-zero infra_score for 0-replica AMF"
+        assert result["infra_score"] >= 0.80, "Expected infra_score >= 0.80 for 0-replica AMF (infrastructure layer)"
         assert result["infra_checked"] is True
 

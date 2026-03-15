@@ -284,18 +284,21 @@ def compute_infrastructure_score(
     dag_nfs_lower = {nf.lower() for nf in (affected_nfs or [])}
     absent_dag_nfs = extract_replica_status(metrics) & dag_nfs_lower if dag_nfs_lower else set()
 
+    if absent_dag_nfs:
+        # A DAG-flow NF has 0 available replicas — definitively an infrastructure
+        # event (deployment scaled to zero or crashlooping). Individual pod factors
+        # are all zero because there are no pod objects, so we short-circuit to 1.0
+        # instead of letting the weighted sum produce a misleadingly low score.
+        return 1.0
+
     pod_status = metrics.get("pod_status", [])
     status_factor = 0.0
-    if absent_dag_nfs:
-        # Deployment completely absent — highest signal
-        status_factor = 1.0
-    else:
-        for entry in pod_status:
-            phase = entry.get("phase", "Running")
-            if phase in ("Failed", "Unknown"):
-                status_factor = max(status_factor, 1.0)
-            elif phase == "Pending":
-                status_factor = max(status_factor, cfg.pod_pending_factor)
+    for entry in pod_status:
+        phase = entry.get("phase", "Running")
+        if phase in ("Failed", "Unknown"):
+            status_factor = max(status_factor, 1.0)
+        elif phase == "Pending":
+            status_factor = max(status_factor, cfg.pod_pending_factor)
     score += cfg.infra_weight_pod_status * status_factor
 
     # Factor 4: Resource Saturation
