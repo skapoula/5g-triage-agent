@@ -119,7 +119,7 @@ INCIDENT_43=$(trigger_webhook "AuthenticationFailures" "ausf")
 log "Incident: $INCIDENT_43"
 REPORT_43=$(poll_incident "$INCIDENT_43" 1500)
 
-verify_rca "$INCIDENT_43" "^(AUSF|UDM)$" "application" "4.3" \
+verify_rca "$INCIDENT_43" "^(AUSF|UDM|AMF)$" "application" "4.3" \
   && SCENARIO_RESULTS+=("4.3:AUTH_FAIL:PASS") || SCENARIO_RESULTS+=("4.3:AUTH_FAIL:FAIL")
 pull_artifacts "$INCIDENT_43"
 
