@@ -29,9 +29,9 @@ verify_rca() {
   [[ "$root_nf" =~ $expected_nf_re ]] || { fail "$label: root_nf=$root_nf not in [$expected_nf_re]"; ok=false; }
   [[ "$layer" == "$expected_layer" ]]  || { fail "$label: layer=$layer expected $expected_layer"; ok=false; }
   [[ "$fail_mode" != "llm_timeout" ]]  || { fail "$label: llm_timeout sentinel"; ok=false; }
-  local conf_ok; conf_ok=$(echo "$confidence >= 0.70" | bc -l)
+  local conf_ok; conf_ok=$(python3 -c "print(1 if float('${confidence:-0}') >= 0.70 else 0)" 2>/dev/null || echo 0)
   [[ "$conf_ok" -eq 1 ]] || { fail "$label: confidence=$confidence < 0.70"; ok=false; }
-  local eq_ok; eq_ok=$(echo "$eq_score >= 0.50" | bc -l)
+  local eq_ok; eq_ok=$(python3 -c "print(1 if float('${eq_score:-0}') >= 0.50 else 0)" 2>/dev/null || echo 0)
   [[ "$eq_ok" -eq 1 ]] || { fail "$label: evidence_quality=$eq_score < 0.50"; ok=false; }
 
   $ok && { pass "$label PASSED (root_nf=$root_nf layer=$layer confidence=$confidence)"; return 0; }
@@ -46,7 +46,7 @@ log "Incident: $INCIDENT_41"
 REPORT_41=$(poll_incident "$INCIDENT_41" 1500)
 
 INFRA_41=$(echo "$REPORT_41" | jq -r '.final_report.infra_score // 1')
-INFRA_OK=$(echo "$INFRA_41 < 0.3" | bc -l)
+INFRA_OK=$(python3 -c "print(1 if float('${INFRA_41:-1}') < 0.3 else 0)" 2>/dev/null || echo 0)
 [[ "$INFRA_OK" -eq 1 ]] && pass "4.1: infra_score=$INFRA_41 < 0.3 (no false positive)" \
   || fail "4.1: infra_score=$INFRA_41 ≥ 0.3 — possible false positive"
 

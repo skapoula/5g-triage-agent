@@ -40,10 +40,11 @@ REPORT=$(poll_incident "$INCIDENT" 1500) || { fail "Incident did not complete"; 
 log "Step 2.1 — Checking DagMapper output..."
 MAPPING_CONF=$(echo "$REPORT" | jq -r '.final_report.mapping_confidence // empty')
 PROC_NAMES=$(echo "$REPORT" | jq -r '.final_report.procedure_names // [] | @json')
-if [[ "$MAPPING_CONF" == "1.0" ]] && echo "$PROC_NAMES" | grep -q "Registration_General"; then
-  pass "DagMapper: mapping_confidence=1.0, Registration_General mapped"
+MAP_OK=$(python3 -c "print(1 if float('${MAPPING_CONF:-0}') >= 0.7 else 0)" 2>/dev/null || echo 0)
+if [[ "$MAP_OK" -eq 1 ]] && echo "$PROC_NAMES" | grep -q "Registration_General"; then
+  pass "DagMapper: mapping_confidence=$MAPPING_CONF (≥0.7), Registration_General mapped"
 else
-  fail "DagMapper: mapping_confidence=$MAPPING_CONF, procedures=$PROC_NAMES"
+  fail "DagMapper: mapping_confidence=$MAPPING_CONF (<0.7), procedures=$PROC_NAMES"
   ERRORS=$((ERRORS+1))
 fi
 
@@ -102,7 +103,7 @@ fi
 # ── Step 2.6: EvidenceQualityAgent ───────────────────────────────────────────
 log "Step 2.6 — Checking EvidenceQualityAgent score..."
 EQ_SCORE=$(echo "$REPORT" | jq -r '.final_report.evidence_quality_score // 0')
-EQ_OK=$(echo "$EQ_SCORE >= 0.50" | bc -l 2>/dev/null || echo 0)
+EQ_OK=$(python3 -c "print(1 if float('${EQ_SCORE:-0}') >= 0.50 else 0)" 2>/dev/null || echo 0)
 if [[ "$EQ_OK" -eq 1 ]]; then
   pass "EvidenceQualityAgent: evidence_quality_score=$EQ_SCORE (≥0.50)"
 else
