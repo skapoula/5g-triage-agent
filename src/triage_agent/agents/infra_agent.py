@@ -96,18 +96,19 @@ async def _fetch_prometheus_metrics(
     cfg = get_config()
     queries = list(build_infra_queries(cfg.core_namespace))
 
-    # Add replica-absence query scoped to affected NFs
+    # Replica-absence query is run separately as a range query (see below).
+    # Build the raw PromQL but do NOT add it to the instant-query list.
+    replica_query: str | None = None
     if affected_nfs:
         nf_regex = "|".join(nf.lower() for nf in affected_nfs)
-        queries.append(
-            f'label_replace('
-            f'kube_deployment_status_replicas_available{{deployment=~"{nf_regex}"}},'
-            f'"report","replicas_available","","")'
+        replica_query = (
+            f'kube_deployment_status_replicas_available{{deployment=~"{nf_regex}"}}'
         )
 
     collected: dict[str, list[dict[str, Any]]] = {}
 
     async with httpx.AsyncClient(timeout=cfg.mcp_timeout) as client:
+        # ── Instant queries for all standard infra metrics ───────────────────
         for query in queries:
             for attempt in range(cfg.prometheus_max_retries):
                 try:
@@ -133,6 +134,65 @@ async def _fetch_prometheus_metrics(
                         "Prometheus query failed (attempt %d): %s",
                         attempt + 1,
                         query,
+                        exc_info=True,
+                    )
+                    break
+
+        # ── Range query for replica-absence detection ────────────────────────
+        # Use a range query over [start, end] so we detect 0-replica states that
+        # occurred during the incident window even if Prometheus hasn't yet scraped
+        # the current state (instant queries return stale data when queried before
+        # kube-state-metrics has scraped the scale-to-0 event).
+        if replica_query:
+            for attempt in range(cfg.prometheus_max_retries):
+                try:
+                    resp = await client.get(
+                        f"{cfg.prometheus_url}/api/v1/query_range",
+                        params={
+                            "query": replica_query,
+                            "start": start,
+                            "end": end,
+                            "step": "15s",
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    for series in data.get("data", {}).get("result", []):
+                        deployment = series["metric"].get("deployment", "")
+                        values = series.get("values", [])
+                        # If any sample in the window had 0 replicas, record as absent.
+                        if any(float(v[1]) == 0 for v in values):
+                            collected.setdefault("replicas_available", []).append(
+                                {
+                                    "metric": {**series["metric"], "report": "replicas_available"},
+                                    "value": [end, "0"],  # sentinel: deployment was absent
+                                }
+                            )
+                            logger.info(
+                                "Replica-absence detected via range query: deployment=%s had 0 replicas in window",
+                                deployment,
+                            )
+                        else:
+                            # Deployment is healthy — record current (last) value
+                            if values:
+                                collected.setdefault("replicas_available", []).append(
+                                    {
+                                        "metric": {**series["metric"], "report": "replicas_available"},
+                                        "value": values[-1],
+                                    }
+                                )
+                    break
+                except httpx.TimeoutException:
+                    logger.warning(
+                        "Prometheus replica range query timed out (attempt %d)", attempt + 1
+                    )
+                except httpx.HTTPStatusError as exc:
+                    logger.warning("Prometheus replica range query HTTP error: %s", exc)
+                    break
+                except Exception:
+                    logger.warning(
+                        "Prometheus replica range query failed (attempt %d)",
+                        attempt + 1,
                         exc_info=True,
                     )
                     break

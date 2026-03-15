@@ -7,6 +7,7 @@ Produces root_nf, failure_mode, confidence, evidence_chain.
 
 import json
 import logging
+import time
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -423,7 +424,7 @@ def rca_agent_first_attempt(state: TriageState) -> dict[str, Any]:
             "evidence_gaps": ["LLM analysis unavailable due to timeout"],
         }
     except Exception as e:
-        # Malformed JSON or other unexpected LLM output error.
+        # Malformed JSON or other unexpected LLM output error (including 503 "Loading model").
         # Retry if we have attempts remaining; otherwise degrade gracefully.
         attempt = state.get("attempt_count", 1)
         cfg = get_config()
@@ -435,6 +436,14 @@ def rca_agent_first_attempt(state: TriageState) -> dict[str, Any]:
             will_retry,
             e,
         )
+        # For 503 "Loading model" errors, back off before retry so the model
+        # has time to finish loading (llama.cpp cold-start after long inference).
+        if will_retry and ("503" in str(e) or "loading model" in str(e).lower()):
+            logger.info(
+                "LLM returned 503 Loading model for incident %s — sleeping 60s before retry",
+                state.get("incident_id"),
+            )
+            time.sleep(60)
         return {
             "root_nf": "unknown",
             "failure_mode": "llm_error",
