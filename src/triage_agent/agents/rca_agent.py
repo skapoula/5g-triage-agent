@@ -422,6 +422,28 @@ def rca_agent_first_attempt(state: TriageState) -> dict[str, Any]:
             "needs_more_evidence": False,
             "evidence_gaps": ["LLM analysis unavailable due to timeout"],
         }
+    except Exception as e:
+        # Malformed JSON or other unexpected LLM output error.
+        # Retry if we have attempts remaining; otherwise degrade gracefully.
+        attempt = state.get("attempt_count", 1)
+        cfg = get_config()
+        will_retry = attempt < cfg.max_attempts
+        logger.warning(
+            "LLM returned invalid output for incident %s (attempt %d, retry=%s): %s",
+            state.get("incident_id"),
+            attempt,
+            will_retry,
+            e,
+        )
+        return {
+            "root_nf": "unknown",
+            "failure_mode": "llm_error",
+            "confidence": 0.0,
+            "evidence_chain": [],
+            "layer": "unknown",
+            "needs_more_evidence": will_retry,
+            "evidence_gaps": [f"LLM output error: {type(e).__name__}"],
+        }
 
     root_nf = analysis["root_nf"]
     failure_mode = analysis["failure_mode"]
