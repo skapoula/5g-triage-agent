@@ -220,6 +220,32 @@ def build_loki_queries_from_dags(
     return build_loki_queries(combined, core_namespace)
 
 
+def _is_qualifying_with_noise_filter(
+    entry: dict[str, Any],
+    noise_patterns: list[str],
+) -> bool:
+    """Return True if entry qualifies as evidence (not noise).
+
+    An entry is disqualified if its message matches any noise pattern,
+    regardless of level. Otherwise, it qualifies if it has a matched
+    phase/pattern OR is ERROR/WARN/FATAL level.
+
+    Args:
+        entry: Log entry dict with 'message', 'level', 'matched_phase', 'matched_pattern'.
+        noise_patterns: Wildcard patterns (case-insensitive) to suppress.
+
+    Returns:
+        True if the entry should be included as evidence.
+    """
+    message = entry.get("message", "")
+    for pattern in noise_patterns:
+        if wildcard_match(message, pattern):
+            return False
+    if entry.get("matched_phase") or entry.get("matched_pattern"):
+        return True
+    return str(entry.get("level", "")).upper() in ("ERROR", "WARN", "FATAL")
+
+
 # --- Agent entry point ---
 
 
@@ -228,14 +254,14 @@ def compress_nf_logs(
     nf_union: list[str],
     token_budget: int,
 ) -> dict[str, Any]:
-    """Compress NF logs with DAG-NF protection.
+    """Compress NF logs with DAG-NF protection and noise filtering.
 
-    DAG-flow NFs (lowercase match against nf_union) — ALL entries kept,
-    messages are NEVER truncated.
+    DAG-flow NFs (lowercase match against nf_union) — qualifying entries kept,
+    noise-matching entries stripped, messages are NEVER truncated.
 
-    Non-DAG NFs — keep only entries that are qualifying (ERROR/WARN/FATAL level
-    or matched against a DAG phase/pattern). NFs with no qualifying entries
-    are omitted entirely.
+    Non-DAG NFs — keep only entries that qualify (ERROR/WARN/FATAL level
+    or matched against a DAG phase/pattern) AND do not match any noise pattern.
+    NFs with no qualifying entries are omitted entirely.
 
     Budget enforcement: non-DAG entries are evicted entry-by-entry (partial NF
     inclusion is allowed); DAG NF keys are never removed from the result even
@@ -248,6 +274,7 @@ def compress_nf_logs(
 
     cfg = get_config()
     max_chars = cfg.rca_log_max_message_chars
+    noise_patterns = cfg.log_noise_patterns
 
     def _truncate(entry: dict[str, Any]) -> dict[str, Any]:
         msg = entry.get("message", "")
@@ -257,12 +284,6 @@ def compress_nf_logs(
 
     nf_union_lower: set[str] = {nf.lower() for nf in nf_union}
 
-    def _is_qualifying(entry: dict[str, Any]) -> bool:
-        """Non-DAG entry qualifies when ERROR/WARN/FATAL or DAG-matched."""
-        if entry.get("matched_phase") or entry.get("matched_pattern"):
-            return True
-        return str(entry.get("level", "")).upper() in ("ERROR", "WARN", "FATAL")
-
     dag_nf_logs: dict[str, list[dict[str, Any]]] = {}
     non_dag_nf_logs: dict[str, list[dict[str, Any]]] = {}
 
@@ -270,9 +291,16 @@ def compress_nf_logs(
         if not isinstance(entries, list):
             continue
         if nf.lower() in nf_union_lower:
-            dag_nf_logs[nf] = [_truncate(e) for e in entries]
+            # DAG NFs: keep all non-noise entries (truncate messages)
+            dag_nf_logs[nf] = [
+                _truncate(e) for e in entries
+                if not any(wildcard_match(e.get("message", ""), p) for p in noise_patterns)
+            ]
         else:
-            qualifying = [_truncate(e) for e in entries if _is_qualifying(e)]
+            qualifying = [
+                _truncate(e) for e in entries
+                if _is_qualifying_with_noise_filter(e, noise_patterns)
+            ]
             if qualifying:
                 non_dag_nf_logs[nf] = qualifying
 
