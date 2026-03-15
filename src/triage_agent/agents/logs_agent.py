@@ -276,16 +276,29 @@ def compress_nf_logs(
             if qualifying:
                 non_dag_nf_logs[nf] = qualifying
 
-    # DAG NFs always included (never truncated)
-    result: dict[str, Any] = dict(dag_nf_logs)
-
-    dag_tokens = count_tokens(str(result))
+    # DAG NFs are prioritised but must fit within budget.
+    # If DAG NFs together exceed the budget, trim entries per-NF (keep most recent).
+    result: dict[str, Any] = {}
+    dag_tokens = count_tokens(str(dag_nf_logs))
     if dag_tokens > token_budget:
         logger.warning(
-            "DAG NF logs exceed token budget (%d tokens), forwarding DAG NFs anyway",
+            "DAG NF logs exceed token budget (%d tokens), trimming to budget",
             dag_tokens,
         )
-        return result
+        # Distribute budget evenly across DAG NFs; keep tail (most recent) entries.
+        per_nf_budget = max(token_budget // max(len(dag_nf_logs), 1), 50)
+        for nf, entries in dag_nf_logs.items():
+            kept: list[dict[str, Any]] = []
+            for entry in reversed(entries):
+                trial = {**result, nf: [entry] + kept}
+                if count_tokens(str(trial)) <= per_nf_budget + count_tokens(str(result)):
+                    kept.insert(0, entry)
+                else:
+                    break
+            if kept:
+                result[nf] = kept
+    else:
+        result = dict(dag_nf_logs)
 
     # Add non-DAG NFs with entry-level eviction (partial inclusion allowed)
     for nf, entries in non_dag_nf_logs.items():

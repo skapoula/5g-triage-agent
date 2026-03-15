@@ -183,13 +183,14 @@ class TriageAgentConfig(BaseSettings):
 
     # --- Evidence compression token budgets ---
     # Token budget per evidence section (1 token ≈ 4 chars).
-    # Total target: ~3500 tokens for all evidence sections combined,
-    # leaving room for the prompt template (~400 tokens) and LLM response.
-    rca_token_budget_infra: int = 400
-    rca_token_budget_dag: int = 800
-    rca_token_budget_metrics: int = 500
-    rca_token_budget_logs: int = 1300
-    rca_token_budget_traces: int = 500
+    # Total target: ~2200 tokens for all evidence sections combined.
+    # Sized for qwen3-4b (n_ctx=4096): prompt template (~500) + evidence (~2200)
+    # + LLM output reserve (~512) = ~3212, safely under 4096.
+    rca_token_budget_infra: int = 250
+    rca_token_budget_dag: int = 500
+    rca_token_budget_metrics: int = 300
+    rca_token_budget_logs: int = 800
+    rca_token_budget_traces: int = 300
     # Max chars per individual log message before truncation.
     rca_log_max_message_chars: int = 200
     # Max trace deviations per DAG name before truncation.

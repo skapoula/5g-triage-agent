@@ -34,9 +34,9 @@ else
 fi
 
 # 3. Stop any existing uvicorn on port 8000
-if lsof -ti:8000 > /dev/null 2>&1; then
+if fuser 8000/tcp > /dev/null 2>&1; then
   log "Stopping existing process on port 8000..."
-  kill "$(lsof -ti:8000)" 2>/dev/null || true
+  fuser -k 8000/tcp 2>/dev/null || true
   sleep 2
 fi
 

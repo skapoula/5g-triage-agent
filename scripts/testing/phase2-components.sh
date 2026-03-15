@@ -34,7 +34,7 @@ log "Incident ID: $INCIDENT"
 echo "$INCIDENT" > "$RESULTS_DIR/phase2-incident-id.txt"
 
 log "Polling for completion (up to 360s)..."
-REPORT=$(poll_incident "$INCIDENT" 360) || { fail "Incident did not complete"; exit 1; }
+REPORT=$(poll_incident "$INCIDENT" 1500) || { fail "Incident did not complete"; exit 1; }
 
 # ── Step 2.1: DagMapper ───────────────────────────────────────────────────────
 log "Step 2.1 — Checking DagMapper output..."

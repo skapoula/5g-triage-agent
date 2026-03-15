@@ -263,7 +263,7 @@ def create_llm(
             base_url=base_url,
             temperature=temperature,
             timeout=timeout,
-            model_kwargs={"max_tokens": 4096},
+            model_kwargs={"max_tokens": 512},
             streaming=True,
         )
     else:

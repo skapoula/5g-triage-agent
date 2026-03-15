@@ -15,7 +15,7 @@ if [[ -f "$RESULTS_DIR/phase2-incident-id.txt" ]]; then
 else
   log "No Phase 2 incident found — triggering new one..."
   INCIDENT=$(trigger_webhook "RegistrationFailures" "amf" "warning")
-  poll_incident "$INCIDENT" 360 > /dev/null
+  poll_incident "$INCIDENT" 1500 > /dev/null
 fi
 
 # ── 3.1: NfMetricsAgent ↔ Prometheus ────────────────────────────────────────
@@ -139,7 +139,7 @@ else
 fi
 
 log "Waiting for second incident to complete..."
-FINAL=$(poll_incident "$NEW_INCIDENT" 360)
+FINAL=$(poll_incident "$NEW_INCIDENT" 1500)
 FINAL_STATUS=$(echo "$FINAL" | jq -r '.status')
 [[ "$FINAL_STATUS" == "complete" ]] && \
   pass "3.9: Lifecycle complete end-to-end" || \

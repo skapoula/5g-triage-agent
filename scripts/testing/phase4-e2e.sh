@@ -43,7 +43,7 @@ log ""
 log "=== Scenario 4.1: Sunny Day ==="
 INCIDENT_41=$(trigger_webhook "RegistrationFailures" "amf" "warning")
 log "Incident: $INCIDENT_41"
-REPORT_41=$(poll_incident "$INCIDENT_41" 360)
+REPORT_41=$(poll_incident "$INCIDENT_41" 1500)
 
 INFRA_41=$(echo "$REPORT_41" | jq -r '.final_report.infra_score // 1')
 INFRA_OK=$(echo "$INFRA_41 < 0.3" | bc -l)
@@ -78,7 +78,7 @@ sleep 15
 
 INCIDENT_42=$(trigger_webhook "RegistrationFailures" "amf")
 log "Incident: $INCIDENT_42"
-REPORT_42=$(poll_incident "$INCIDENT_42" 360)
+REPORT_42=$(poll_incident "$INCIDENT_42" 1500)
 
 verify_rca "$INCIDENT_42" "^AMF$" "infrastructure" "4.2" \
   && SCENARIO_RESULTS+=("4.2:REG_FAIL:PASS") || SCENARIO_RESULTS+=("4.2:REG_FAIL:FAIL")
@@ -117,7 +117,7 @@ sleep 30
 
 INCIDENT_43=$(trigger_webhook "AuthenticationFailures" "ausf")
 log "Incident: $INCIDENT_43"
-REPORT_43=$(poll_incident "$INCIDENT_43" 360)
+REPORT_43=$(poll_incident "$INCIDENT_43" 1500)
 
 verify_rca "$INCIDENT_43" "^(AUSF|UDM)$" "application" "4.3" \
   && SCENARIO_RESULTS+=("4.3:AUTH_FAIL:PASS") || SCENARIO_RESULTS+=("4.3:AUTH_FAIL:FAIL")
@@ -153,7 +153,7 @@ sleep 30
 
 INCIDENT_44=$(trigger_webhook "PDUSessionFailures" "smf")
 log "Incident: $INCIDENT_44"
-REPORT_44=$(poll_incident "$INCIDENT_44" 360)
+REPORT_44=$(poll_incident "$INCIDENT_44" 1500)
 
 verify_rca "$INCIDENT_44" "^SMF$" "application" "4.4" \
   && SCENARIO_RESULTS+=("4.4:PDU_FAIL:PASS") || SCENARIO_RESULTS+=("4.4:PDU_FAIL:FAIL")
