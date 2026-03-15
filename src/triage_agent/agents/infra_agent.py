@@ -70,7 +70,7 @@ def build_infra_queries(core_namespace: str) -> list[str]:
         f'label_replace(sum by (namespace, pod, phase) '
         f'(kube_pod_status_phase{{namespace="{ns}", phase=~"Running|Pending|Unknown|Failed", '
         f'pod=~"{pr}"}}) > 0, '
-        f'"__name__", "pod_status", "", "")',
+        f'"report", "pod_status", "", "")',
     ]
 
 async def _fetch_prometheus_metrics(
@@ -158,6 +158,83 @@ def extract_replica_status(metrics: dict[str, Any]) -> set[str]:
         except (IndexError, ValueError, TypeError):
             pass
     return absent
+
+
+def _safe_float(value_field: Any) -> float:
+    """Extract float from a Prometheus value field, which may be [timestamp, value_str] or a plain number."""
+    try:
+        if isinstance(value_field, list):
+            return float(value_field[1])
+        return float(value_field)
+    except (IndexError, ValueError, TypeError):
+        return 0.0
+
+
+def _normalize_prometheus_metrics(raw: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Convert raw Prometheus series format to the internal format expected by extract_* functions.
+
+    Prometheus returns each series as {"metric": {label: value, ...}, "value": [timestamp, value_str]}.
+    The internal format used by compute_infrastructure_score and extract_* helpers is simpler:
+    {"pod": str, "value": float, ...}.
+
+    Args:
+        raw: Dict keyed by report label, values are lists of raw Prometheus series dicts.
+
+    Returns:
+        Normalized dict with keys: pod_restarts, oom_kills, cpu_usage, memory_percent,
+        pod_status, replicas_available.
+    """
+    normalized: dict[str, Any] = {}
+
+    normalized["pod_restarts"] = [
+        {
+            "pod": s["metric"].get("pod", "unknown"),
+            "container": s["metric"].get("container", ""),
+            "value": _safe_float(s.get("value", [0, "0"])),
+        }
+        for s in raw.get("pod_restarts", [])
+    ]
+
+    normalized["oom_kills"] = [
+        {
+            "pod": s["metric"].get("pod", "unknown"),
+            "container": s["metric"].get("container", ""),
+            "value": _safe_float(s.get("value", [0, "0"])),
+        }
+        for s in raw.get("oom_kills_5m", [])
+        if _safe_float(s.get("value", [0, "0"])) > 0
+    ]
+
+    normalized["cpu_usage"] = [
+        {
+            "pod": s["metric"].get("pod", "unknown"),
+            "container": s["metric"].get("container", ""),
+            "value": _safe_float(s.get("value", [0, "0"])),
+        }
+        for s in raw.get("cpu_usage_rate_2m", [])
+    ]
+
+    normalized["memory_percent"] = [
+        {
+            "pod": s["metric"].get("pod", "unknown"),
+            "container": s["metric"].get("container", ""),
+            "value": _safe_float(s.get("value", [0, "0"])),
+        }
+        for s in raw.get("memory_usage_percent", [])
+    ]
+
+    normalized["pod_status"] = [
+        {
+            "pod": s["metric"].get("pod", "unknown"),
+            "phase": s["metric"].get("phase", "Unknown"),
+        }
+        for s in raw.get("pod_status", [])
+    ]
+
+    # replicas_available kept in Prometheus format — extract_replica_status reads it directly
+    normalized["replicas_available"] = raw.get("replicas_available", [])
+
+    return normalized
 
 
 # --- Infrastructure score: 4-factor weighted model ---
@@ -459,11 +536,12 @@ def infra_agent(state: TriageState) -> dict[str, Any]:
 
         affected_nfs = extract_nfs_from_alert(alert)
 
-        # Fetch Prometheus metrics via direct HTTP
+        # Fetch Prometheus metrics via direct HTTP and normalize to internal format
         try:
-            metrics = asyncio.run(
+            metrics_raw = asyncio.run(
                 _fetch_prometheus_metrics(affected_nfs, start, end)
             )
+            metrics = _normalize_prometheus_metrics(metrics_raw)
         except Exception:
             logger.warning(
                 "Prometheus fetch failed, proceeding with empty metrics",
