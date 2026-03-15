@@ -124,7 +124,9 @@ verify_rca "$INCIDENT_43" "^(AUSF|UDM|AMF)$" "application" "4.3" \
 pull_artifacts "$INCIDENT_43"
 
 log "Restoring: applying ue-config backup..."
-kubectl apply -f "$RESULTS_DIR/ue-config-backup.yaml"
+kubectl replace -f "$RESULTS_DIR/ue-config-backup.yaml" 2>/dev/null \
+  || kubectl apply --force-conflicts --server-side -f "$RESULTS_DIR/ue-config-backup.yaml" 2>/dev/null \
+  || log "WARNING: ue-config restore conflict — backup may have stale resourceVersion; continuing"
 OP_RESTORED=$(kubectl get configmap ue-config -n "$CORE_NS" \
   -o jsonpath='{.data.ue-base\.yaml}' | grep "^op:" | head -1)
 log "  op field after restore: $OP_RESTORED"
