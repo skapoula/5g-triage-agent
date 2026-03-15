@@ -239,6 +239,18 @@ class TriageAgentConfig(BaseSettings):
     # Should match pyproject.toml; update on each release.
     app_version: str = "3.2.0"
 
+    # Log noise filtering: entries whose message matches any of these patterns
+    # (wildcard * supported, case-insensitive) are excluded from evidence even
+    # when they would otherwise qualify as ERROR/WARN/FATAL.
+    # Use to suppress persistent chatter from undeployed NFs (e.g. BSF in open5GS).
+    # JSON list via env: LOG_NOISE_PATTERNS='["*custom pattern*"]'
+    log_noise_patterns: list[str] = [
+        "*BSF selection failed*",
+        "*no BSF instances found*",
+        "*BSF query error*",
+        "*BSF not found*",
+    ]
+
     model_config = {
         "env_prefix": "",
         "case_sensitive": False,

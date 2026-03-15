@@ -639,6 +639,37 @@ class TestArtifactsConfig:
         assert config.nf_latency_threshold_seconds == 2.5
 
 
+class TestLogNoisePatterns:
+    """Tests for log_noise_patterns configuration field."""
+
+    def test_config_has_log_noise_patterns(self) -> None:
+        """log_noise_patterns field must exist and be a list."""
+        from triage_agent.config import get_config
+
+        cfg = get_config()
+        assert hasattr(cfg, "log_noise_patterns")
+        assert isinstance(cfg.log_noise_patterns, list)
+        assert len(cfg.log_noise_patterns) >= 1
+
+    def test_config_log_noise_patterns_cover_bsf(self) -> None:
+        """At least one pattern must reference BSF noise."""
+        from triage_agent.config import get_config
+
+        cfg = get_config()
+        bsf_patterns = [
+            p for p in cfg.log_noise_patterns if "BSF" in p or "bsf" in p.lower()
+        ]
+        assert bsf_patterns, "Expected at least one BSF noise pattern in config"
+
+    def test_log_noise_patterns_override_via_constructor(self) -> None:
+        """log_noise_patterns can be overridden via constructor."""
+        from triage_agent.config import TriageAgentConfig
+
+        patterns = ["*custom noise*", "*test pattern*"]
+        cfg = TriageAgentConfig(log_noise_patterns=patterns)
+        assert cfg.log_noise_patterns == patterns
+
+
 class TestArtifactsDirResolution:
     def test_relative_artifacts_dir_is_resolved_to_absolute(self) -> None:
         """A relative artifacts_dir must be converted to absolute at config load."""
