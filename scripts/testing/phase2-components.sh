@@ -33,7 +33,7 @@ INCIDENT=$(trigger_webhook "RegistrationFailures" "amf" "warning")
 log "Incident ID: $INCIDENT"
 echo "$INCIDENT" > "$RESULTS_DIR/phase2-incident-id.txt"
 
-log "Polling for completion (up to 360s)..."
+log "Polling for completion (up to 1500s)..."
 REPORT=$(poll_incident "$INCIDENT" 1500) || { fail "Incident did not complete"; exit 1; }
 
 # ── Step 2.1: DagMapper ───────────────────────────────────────────────────────

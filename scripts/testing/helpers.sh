@@ -67,20 +67,20 @@ poll_incident() {
   local elapsed=0
   local result
 
-  log "Polling incident $incident_id (timeout ${timeout}s)..."
+  log "Polling incident $incident_id (timeout ${timeout}s)..." >&2
   while [[ $elapsed -lt $timeout ]]; do
     result=$(curl -s "$WEBHOOK_URL/incidents/$incident_id")
     local status
     status=$(echo "$result" | jq -r '.status // "unknown"')
 
     if [[ "$status" == "complete" ]]; then
-      echo "$result" | jq . | tee "$RESULTS_DIR/${incident_id}.json"
-      log "Incident $incident_id complete"
+      echo "$result" | jq . | tee "$RESULTS_DIR/${incident_id}.json" >&2
+      log "Incident $incident_id complete" >&2
       echo "$result"
       return 0
     fi
 
-    log "Status: $status (${elapsed}s elapsed)"
+    log "Status: $status (${elapsed}s elapsed)" >&2
     sleep 10
     elapsed=$((elapsed + 10))
   done
