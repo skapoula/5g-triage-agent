@@ -43,6 +43,10 @@ fi
 # 4. Start uvicorn in background
 log "Starting TriageAgent with uvicorn (log: $TRIAGE_LOG)..."
 mkdir -p "$ARTIFACTS_DIR"
+# LLM_BASE_URL: pass through from environment if set (useful when ClusterIP is unreachable
+# from devcontainer and a kubectl port-forward is used instead).
+export LLM_BASE_URL="${LLM_BASE_URL:-http://qwen3-4b.ml-serving.svc.cluster.local/v1}"
+log "LLM_BASE_URL=$LLM_BASE_URL"
 nohup uvicorn triage_agent.api.webhook:app --port 8000 \
   > "$TRIAGE_LOG" 2>&1 &
 UVICORN_PID=$!

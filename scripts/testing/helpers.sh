@@ -100,7 +100,7 @@ check_imsi_loki() {
 
   for i in $(seq 1 10); do
     local imsi
-    imsi=$(printf "imsi-20893000000000%d" "$i")
+    imsi=$(printf "imsi-2089300000000%02d" "$i")
     local count
     count=$(curl -s \
       --data-urlencode "query={k8s_namespace_name=\"$CORE_NS\", k8s_pod_name=~\".*amf.*\"} |= \"$imsi\"" \
