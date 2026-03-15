@@ -57,7 +57,7 @@ FAIL_41=$(echo "$REPORT_41" | jq -r '.final_report.failure_mode // ""')
 log "Recording baseline token counts..."
 for artifact in pre_filter_metrics.json post_filter_metrics.json \
                 pre_filter_logs.json post_filter_logs.json; do
-  collect_token_count "$INCIDENT_41" "$artifact"
+  collect_token_count "$INCIDENT_41" "$artifact" || true
 done
 pull_artifacts "$INCIDENT_41"
 SCENARIO_RESULTS+=("4.1:SUNNY_DAY:infra_score=$INFRA_41")

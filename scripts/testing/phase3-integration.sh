@@ -31,7 +31,7 @@ else
   ERRORS=$((ERRORS+1))
 fi
 log "Token count for 3.1:"
-collect_token_count "$INCIDENT" "post_filter_metrics.json"
+collect_token_count "$INCIDENT" "post_filter_metrics.json" || true
 
 # ── 3.2: NfLogsAgent ↔ Loki ─────────────────────────────────────────────────
 log "3.2 — NfLogsAgent ↔ Loki (path selection + all NFs in nf_union)..."
@@ -51,7 +51,7 @@ MCP_PATH=$(grep -E "MCP server unavailable|using direct Loki" "$TRIAGE_LOG" 2>/d
 log "  Loki path: $MCP_PATH"
 echo "$MCP_PATH" > "$RESULTS_DIR/phase3-loki-path.txt"
 log "Token count for 3.2:"
-collect_token_count "$INCIDENT" "post_filter_logs.json"
+collect_token_count "$INCIDENT" "post_filter_logs.json" || true
 
 # ── 3.3: UeTracesAgent ↔ Memgraph (write) ───────────────────────────────────
 log "3.3 — UeTracesAgent ↔ Memgraph (CapturedTrace write)..."
@@ -108,8 +108,8 @@ fi
 
 # ── 3.7: RCAAgent ↔ LLM token counts ────────────────────────────────────────
 log "3.7 — RCAAgent ↔ LLM token counts..."
-collect_token_count "$INCIDENT" "llm_prompt.txt"
-collect_token_count "$INCIDENT" "llm_response.json"
+collect_token_count "$INCIDENT" "llm_prompt.txt" || true
+collect_token_count "$INCIDENT" "llm_response.json" || true
 REPORT=$(curl -s "$WEBHOOK_URL/incidents/$INCIDENT")
 CONF=$(echo "$REPORT" | jq -r '.final_report.confidence // 0')
 FAIL_MODE=$(echo "$REPORT" | jq -r '.final_report.failure_mode // ""')
