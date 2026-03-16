@@ -99,8 +99,27 @@ check_imsi_loki 3 || log "WARNING: not all IMSIs visible after restore — proce
 log ""
 log "=== Scenario 4.3: Authentication Failure (wrong op key) ==="
 
-log "Backing up ue-config..."
+log "Restoring known-good ue-config state before backup (op key + APN) ..."
 kubectl get configmap ue-config -n "$CORE_NS" -o yaml \
+  | sed -e "s/op: '00000000000000000000000000000000'/op: '8e27b6af0e692e750f32667a3b14605d'/" \
+        -e "s/apn: 'invalid-internet'/apn: 'internet'/" \
+  | kubectl apply -f - 2>/dev/null || true
+OP_PRE=$(kubectl get configmap ue-config -n "$CORE_NS" \
+  -o jsonpath='{.data.ue-base\.yaml}' | grep "^op:" | head -1)
+APN_PRE=$(kubectl get configmap ue-config -n "$CORE_NS" \
+  -o jsonpath='{.data.ue-base\.yaml}' | grep "apn:" | head -1)
+log "  op field before backup: $OP_PRE"
+log "  APN before backup: $APN_PRE"
+
+log "Restarting UERANSIM with clean config so SQN re-syncs before backup..."
+kubectl rollout restart deployment ueransim -n "$CORE_NS"
+kubectl rollout status deployment ueransim -n "$CORE_NS"
+sleep 60
+check_imsi_loki 3 || log "WARNING: not all IMSIs visible after pre-4.3 cleanup"
+
+log "Backing up ue-config (stripping resourceVersion/uid so restore works)..."
+kubectl get configmap ue-config -n "$CORE_NS" -o yaml \
+  | grep -v '^\s*resourceVersion:\|^\s*uid:\|^\s*creationTimestamp:' \
   > "$RESULTS_DIR/ue-config-backup.yaml"
 
 log "Injecting failure: patching op key to zeroed value..."
@@ -124,18 +143,25 @@ verify_rca "$INCIDENT_43" "^(AUSF|UDM|AMF)$" "application" "4.3" \
 pull_artifacts "$INCIDENT_43"
 
 log "Restoring: applying ue-config backup..."
-kubectl replace -f "$RESULTS_DIR/ue-config-backup.yaml" 2>/dev/null \
-  || kubectl apply --force-conflicts --server-side -f "$RESULTS_DIR/ue-config-backup.yaml" 2>/dev/null \
-  || log "WARNING: ue-config restore conflict — backup may have stale resourceVersion; continuing"
+kubectl apply -f "$RESULTS_DIR/ue-config-backup.yaml" \
+  || log "WARNING: ue-config restore failed; continuing"
 OP_RESTORED=$(kubectl get configmap ue-config -n "$CORE_NS" \
   -o jsonpath='{.data.ue-base\.yaml}' | grep "^op:" | head -1)
+APN_RESTORED=$(kubectl get configmap ue-config -n "$CORE_NS" \
+  -o jsonpath='{.data.ue-base\.yaml}' | grep "apn:" | head -1)
 log "  op field after restore: $OP_RESTORED"
+log "  APN after restore: $APN_RESTORED"
 
 kubectl rollout restart deployment ueransim -n "$CORE_NS"
 kubectl rollout status deployment ueransim -n "$CORE_NS"
 sleep 30
 log "Confirming UEs re-registered after restore..."
 check_imsi_loki 3 || log "WARNING: not all IMSIs visible after restore"
+
+# Wait for 4.3 auth-failure logs to age out of the 5-min lookback window
+# (alert_lookback_seconds=300) so they don't pollute the 4.4 analysis.
+log "Waiting 360s for 4.3 auth-failure logs to clear the lookback window..."
+sleep 360
 
 # ── 4.4: PDU Session Failure (wrong APN) ──────────────────────────────────────
 log ""
@@ -151,13 +177,19 @@ log "  APN after patch: $APN_PATCHED"
 
 kubectl rollout restart deployment ueransim -n "$CORE_NS"
 kubectl rollout status deployment ueransim -n "$CORE_NS"
-sleep 30
+# 120s sleep: gives UERANSIM time to register (auth ~30s) then start failing PDU sessions
+# so "Select SMF failed: DNN[invalid-internet]" logs appear before the alert fires and
+# fall inside the 5-min lookback window.  With 30s the PDU errors arrived after window end.
+sleep 120
 
 INCIDENT_44=$(trigger_webhook "PDUSessionFailures" "smf")
 log "Incident: $INCIDENT_44"
 REPORT_44=$(poll_incident "$INCIDENT_44" 1500)
 
-verify_rca "$INCIDENT_44" "^SMF$" "application" "4.4" \
+# In open5GS, AMF rejects PDU sessions with unsupported DNN before contacting SMF.
+# The error "Select SMF failed: DNN[invalid-internet] is not supported" is logged at AMF.
+# Accept both AMF and SMF as valid root NFs for PDU session failure.
+verify_rca "$INCIDENT_44" "^(AMF|SMF)$" "application" "4.4" \
   && SCENARIO_RESULTS+=("4.4:PDU_FAIL:PASS") || SCENARIO_RESULTS+=("4.4:PDU_FAIL:FAIL")
 pull_artifacts "$INCIDENT_44"
 
